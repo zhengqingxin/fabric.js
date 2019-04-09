@@ -11,25 +11,30 @@ else if (typeof define === 'function' && define.amd) {
 }
 /* _AMD_END_ */
 if (typeof document !== 'undefined' && typeof window !== 'undefined') {
-  if (document instanceof HTMLDocument)
+  if (document instanceof HTMLDocument) {
     fabric.document = document;
-  else
-    fabric.document = document.implementation.createHTMLDocument("");
+  }
+  else {
+    fabric.document = document.implementation.createHTMLDocument('');
+  }
   fabric.window = window;
 }
 else {
   // assume we're running under node.js when document/window are not present
-  fabric.document = require('jsdom')
-    .jsdom(
-      decodeURIComponent('%3C!DOCTYPE%20html%3E%3Chtml%3E%3Chead%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E'),
-      { features: {
+  var jsdom = require('jsdom');
+  var virtualWindow = new jsdom.JSDOM(
+    decodeURIComponent('%3C!DOCTYPE%20html%3E%3Chtml%3E%3Chead%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E'),
+    {
+      features: {
         FetchExternalResources: ['img']
-      }
-      });
+      },
+      resources: 'usable'
+    }).window;
+  fabric.document = virtualWindow.document;
   fabric.jsdomImplForWrapper = require('jsdom/lib/jsdom/living/generated/utils').implForWrapper;
   fabric.nodeCanvas = require('jsdom/lib/jsdom/utils').Canvas;
-  fabric.window = fabric.document.defaultView;
-  DOMParser = require('xmldom').DOMParser;
+  fabric.window = virtualWindow;
+  DOMParser = fabric.window.DOMParser;
 }
 
 /**
@@ -71,7 +76,6 @@ fabric.DPI = 96;
 fabric.reNum = '(?:[-+]?(?:\\d+|\\d*\\.\\d+)(?:e[-+]?\\d+)?)';
 fabric.fontPaths = { };
 fabric.iMatrix = [1, 0, 0, 1, 0, 0];
-fabric.canvasModule = 'canvas';
 
 /**
  * Pixel limit for cache canvases. 1Mpx , 4Mpx should be fine.
@@ -110,6 +114,15 @@ fabric.charWidthsCache = { };
  * @default
  */
 fabric.textureSize = 2048;
+
+/**
+ * When 'true', style information is not retained when copy/pasting text, making
+ * pasted text use destination style.
+ * Defaults to 'false'.
+ * @type Boolean
+ * @default
+ */
+fabric.disableStyleCopyPaste = false;
 
 /**
  * Enable webgl for filtering picture is available
@@ -166,6 +179,15 @@ fabric.boundsOfCurveCache = { };
  * @default true
  */
 fabric.cachesBoundsOfCurve = true;
+
+/**
+ * Skip performance testing of setupGLContext and force the use of putImageData that seems to be the one that works best on
+ * Chrome + old hardware. if your users are experiencing empty images after filtering you may try to force this to true
+ * this has to be set before instantiating the filtering backend ( before filtering the first image )
+ * @type Boolean
+ * @default false
+ */
+fabric.forceGLPutImageData = false;
 
 fabric.initFilterBackend = function() {
   if (fabric.enableGLFiltering && fabric.isWebglSupported && fabric.isWebglSupported(fabric.textureSize)) {
@@ -2840,6 +2862,7 @@ if (typeof console !== 'undefined') {
    * @param {Number} [options.byValue=100] Value to modify the property by
    * @param {Function} [options.easing] Easing function
    * @param {Number} [options.duration=500] Duration of change (in ms)
+   * @param {Function} [options.abort] Additional function with logic. If returns true, onComplete is called.
    */
   function animate(options) {
 
@@ -2860,6 +2883,8 @@ if (typeof console !== 'undefined') {
       options.onStart && options.onStart();
 
       (function tick(ticktime) {
+        // TODO: move abort call after calculation
+        // and pass (current,valuePerc, timePerc) as arguments
         if (abort()) {
           onComplete(endValue, 1, 1);
           return;
@@ -2937,6 +2962,7 @@ if (typeof console !== 'undefined') {
    * @param {Function} [options.onChange] Callback; invoked on every value change
    * @param {Function} [options.onComplete] Callback; invoked when value change is completed
    * @param {Function} [options.colorEasing] Easing function. Note that this function only take two arguments (currentTime, duration). Thus the regular animation easing functions cannot be used.
+   * @param {Function} [options.abort] Additional function with logic. If returns true, onComplete is called.
    */
   function animateColor(fromColor, toColor, duration, options) {
     var startColor = new fabric.Color(fromColor).getSource(),
@@ -4410,8 +4436,8 @@ if (typeof console !== 'undefined') {
     loadSVGFromString: function(string, callback, reviver, options) {
       string = string.trim();
       var doc;
-      if (typeof DOMParser !== 'undefined') {
-        var parser = new DOMParser();
+      if (typeof fabric.window.DOMParser !== 'undefined') {
+        var parser = new fabric.window.DOMParser();
         if (parser && parser.parseFromString) {
           doc = parser.parseFromString(string, 'text/xml');
         }
@@ -6427,6 +6453,15 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
     includeDefaultValues: true,
 
     /**
+     * When `false`, the shadow will scale with the object.
+     * When `true`, the shadow's offsetX, offsetY, and blur will not be affected by the object's scale.
+     * default to false
+     * @type Boolean
+     * @default
+     */
+    nonScaling: false,
+
+    /**
      * Constructor
      * @param {Object|String} [options] Options object with any of color, blur, offsetX, offsetY properties or string (e.g. "rgba(0,0,0,0.2) 2px 2px 10px")
      * @return {fabric.Shadow} thisArg
@@ -6525,12 +6560,13 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
           blur: this.blur,
           offsetX: this.offsetX,
           offsetY: this.offsetY,
-          affectStroke: this.affectStroke
+          affectStroke: this.affectStroke,
+          nonScaling: this.nonScaling
         };
       }
       var obj = { }, proto = fabric.Shadow.prototype;
 
-      ['color', 'blur', 'offsetX', 'offsetY', 'affectStroke'].forEach(function(prop) {
+      ['color', 'blur', 'offsetX', 'offsetY', 'affectStroke', 'nonScaling'].forEach(function(prop) {
         if (this[prop] !== proto[prop]) {
           obj[prop] = this[prop];
         }
@@ -6552,26 +6588,24 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
 })(typeof exports !== 'undefined' ? exports : this);
 
 
-(function () {
-
-  'use strict';
+(function() {
+  "use strict";
 
   if (fabric.StaticCanvas) {
-    fabric.warn('fabric.StaticCanvas is already defined.');
+    fabric.warn("fabric.StaticCanvas is already defined.");
     return;
   }
 
   // aliases for faster resolution
   var extend = fabric.util.object.extend,
-      getElementOffset = fabric.util.getElementOffset,
-      removeFromArray = fabric.util.removeFromArray,
-      toFixed = fabric.util.toFixed,
-      transformPoint = fabric.util.transformPoint,
-      invertTransform = fabric.util.invertTransform,
-      getNodeCanvas = fabric.util.getNodeCanvas,
-      createCanvasElement = fabric.util.createCanvasElement,
-
-      CANVAS_INIT_ERROR = new Error('Could not initialize `canvas` element');
+    getElementOffset = fabric.util.getElementOffset,
+    removeFromArray = fabric.util.removeFromArray,
+    toFixed = fabric.util.toFixed,
+    transformPoint = fabric.util.transformPoint,
+    invertTransform = fabric.util.invertTransform,
+    getNodeCanvas = fabric.util.getNodeCanvas,
+    createCanvasElement = fabric.util.createCanvasElement,
+    CANVAS_INIT_ERROR = new Error("Could not initialize `canvas` element");
 
   /**
    * Static canvas class
@@ -6586,1795 +6620,1955 @@ fabric.ElementsParser = function(elements, callback, options, reviver, parsingOp
    * @fires object:added
    * @fires object:removed
    */
-  fabric.StaticCanvas = fabric.util.createClass(fabric.CommonMethods, /** @lends fabric.StaticCanvas.prototype */ {
+  fabric.StaticCanvas = fabric.util.createClass(
+    fabric.CommonMethods,
+    /** @lends fabric.StaticCanvas.prototype */ {
+      /**
+       * Constructor
+       * @param {HTMLElement | String} el &lt;canvas> element to initialize instance on
+       * @param {Object} [options] Options object
+       * @return {Object} thisArg
+       */
+      initialize: function(el, options) {
+        options || (options = {});
+        this.renderAndResetBound = this.renderAndReset.bind(this);
+        this.requestRenderAllBound = this.requestRenderAll.bind(this);
+        this._initStatic(el, options);
+      },
 
-    /**
-     * Constructor
-     * @param {HTMLElement | String} el &lt;canvas> element to initialize instance on
-     * @param {Object} [options] Options object
-     * @return {Object} thisArg
-     */
-    initialize: function(el, options) {
-      options || (options = { });
-      this.renderAndResetBound = this.renderAndReset.bind(this);
-      this.requestRenderAllBound = this.requestRenderAll.bind(this);
-      this._initStatic(el, options);
-    },
+      /**
+       * Background color of canvas instance.
+       * Should be set via {@link fabric.StaticCanvas#setBackgroundColor}.
+       * @type {(String|fabric.Pattern)}
+       * @default
+       */
+      backgroundColor: "",
 
-    /**
-     * Background color of canvas instance.
-     * Should be set via {@link fabric.StaticCanvas#setBackgroundColor}.
-     * @type {(String|fabric.Pattern)}
-     * @default
-     */
-    backgroundColor: '',
+      /**
+       * Background image of canvas instance.
+       * Should be set via {@link fabric.StaticCanvas#setBackgroundImage}.
+       * <b>Backwards incompatibility note:</b> The "backgroundImageOpacity"
+       * and "backgroundImageStretch" properties are deprecated since 1.3.9.
+       * Use {@link fabric.Image#opacity}, {@link fabric.Image#width} and {@link fabric.Image#height}.
+       * since 2.4.0 image caching is active, please when putting an image as background, add to the
+       * canvas property a reference to the canvas it is on. Otherwise the image cannot detect the zoom
+       * vale. As an alternative you can disable image objectCaching
+       * @type fabric.Image
+       * @default
+       */
+      backgroundImage: null,
 
-    /**
-     * Background image of canvas instance.
-     * Should be set via {@link fabric.StaticCanvas#setBackgroundImage}.
-     * <b>Backwards incompatibility note:</b> The "backgroundImageOpacity"
-     * and "backgroundImageStretch" properties are deprecated since 1.3.9.
-     * Use {@link fabric.Image#opacity}, {@link fabric.Image#width} and {@link fabric.Image#height}.
-     * since 2.4.0 image caching is active, please when putting an image as background, add to the
-     * canvas property a reference to the canvas it is on. Otherwise the image cannot detect the zoom
-     * vale. As an alternative you can disable image objectCaching
-     * @type fabric.Image
-     * @default
-     */
-    backgroundImage: null,
+      /**
+       * Overlay color of canvas instance.
+       * Should be set via {@link fabric.StaticCanvas#setOverlayColor}
+       * @since 1.3.9
+       * @type {(String|fabric.Pattern)}
+       * @default
+       */
+      overlayColor: "",
 
-    /**
-     * Overlay color of canvas instance.
-     * Should be set via {@link fabric.StaticCanvas#setOverlayColor}
-     * @since 1.3.9
-     * @type {(String|fabric.Pattern)}
-     * @default
-     */
-    overlayColor: '',
+      /**
+       * Overlay image of canvas instance.
+       * Should be set via {@link fabric.StaticCanvas#setOverlayImage}.
+       * <b>Backwards incompatibility note:</b> The "overlayImageLeft"
+       * and "overlayImageTop" properties are deprecated since 1.3.9.
+       * Use {@link fabric.Image#left} and {@link fabric.Image#top}.
+       * since 2.4.0 image caching is active, please when putting an image as overlay, add to the
+       * canvas property a reference to the canvas it is on. Otherwise the image cannot detect the zoom
+       * vale. As an alternative you can disable image objectCaching
+       * @type fabric.Image
+       * @default
+       */
+      overlayImage: null,
 
-    /**
-     * Overlay image of canvas instance.
-     * Should be set via {@link fabric.StaticCanvas#setOverlayImage}.
-     * <b>Backwards incompatibility note:</b> The "overlayImageLeft"
-     * and "overlayImageTop" properties are deprecated since 1.3.9.
-     * Use {@link fabric.Image#left} and {@link fabric.Image#top}.
-     * since 2.4.0 image caching is active, please when putting an image as overlay, add to the
-     * canvas property a reference to the canvas it is on. Otherwise the image cannot detect the zoom
-     * vale. As an alternative you can disable image objectCaching
-     * @type fabric.Image
-     * @default
-     */
-    overlayImage: null,
+      /**
+       * Indicates whether toObject/toDatalessObject should include default values
+       * if set to false, takes precedence over the object value.
+       * @type Boolean
+       * @default
+       */
+      includeDefaultValues: true,
 
-    /**
-     * Indicates whether toObject/toDatalessObject should include default values
-     * if set to false, takes precedence over the object value.
-     * @type Boolean
-     * @default
-     */
-    includeDefaultValues: true,
+      /**
+       * Indicates whether objects' state should be saved
+       * @type Boolean
+       * @default
+       */
+      stateful: false,
 
-    /**
-     * Indicates whether objects' state should be saved
-     * @type Boolean
-     * @default
-     */
-    stateful: false,
+      /**
+       * Indicates whether {@link fabric.Collection.add}, {@link fabric.Collection.insertAt} and {@link fabric.Collection.remove},
+       * {@link fabric.StaticCanvas.moveTo}, {@link fabric.StaticCanvas.clear} and many more, should also re-render canvas.
+       * Disabling this option will not give a performance boost when adding/removing a lot of objects to/from canvas at once
+       * since the renders are quequed and executed one per frame.
+       * Disabling is suggested anyway and managing the renders of the app manually is not a big effort ( canvas.requestRenderAll() )
+       * Left default to true to do not break documentation and old app, fiddles.
+       * @type Boolean
+       * @default
+       */
+      renderOnAddRemove: true,
 
-    /**
-     * Indicates whether {@link fabric.Collection.add}, {@link fabric.Collection.insertAt} and {@link fabric.Collection.remove},
-     * {@link fabric.StaticCanvas.moveTo}, {@link fabric.StaticCanvas.clear} and many more, should also re-render canvas.
-     * Disabling this option will not give a performance boost when adding/removing a lot of objects to/from canvas at once
-     * since the renders are quequed and executed one per frame.
-     * Disabling is suggested anyway and managing the renders of the app manually is not a big effort ( canvas.requestRenderAll() )
-     * Left default to true to do not break documentation and old app, fiddles.
-     * @type Boolean
-     * @default
-     */
-    renderOnAddRemove: true,
+      /**
+       * Function that determines clipping of entire canvas area
+       * Being passed context as first argument.
+       * If you are using code minification, ctx argument can be minified/manglied you should use
+       * as a workaround `var ctx = arguments[0];` in the function;
+       * See clipping canvas area in {@link https://github.com/kangax/fabric.js/wiki/FAQ}
+       * @deprecated since 2.0.0
+       * @type Function
+       * @default
+       */
+      clipTo: null,
 
-    /**
-     * Function that determines clipping of entire canvas area
-     * Being passed context as first argument.
-     * If you are using code minification, ctx argument can be minified/manglied you should use
-     * as a workaround `var ctx = arguments[0];` in the function;
-     * See clipping canvas area in {@link https://github.com/kangax/fabric.js/wiki/FAQ}
-     * @deprecated since 2.0.0
-     * @type Function
-     * @default
-     */
-    clipTo: null,
+      /**
+       * Indicates whether object controls (borders/controls) are rendered above overlay image
+       * @type Boolean
+       * @default
+       */
+      controlsAboveOverlay: false,
 
-    /**
-     * Indicates whether object controls (borders/controls) are rendered above overlay image
-     * @type Boolean
-     * @default
-     */
-    controlsAboveOverlay: false,
+      /**
+       * Indicates whether the browser can be scrolled when using a touchscreen and dragging on the canvas
+       * @type Boolean
+       * @default
+       */
+      allowTouchScrolling: false,
 
-    /**
-     * Indicates whether the browser can be scrolled when using a touchscreen and dragging on the canvas
-     * @type Boolean
-     * @default
-     */
-    allowTouchScrolling: false,
+      /**
+       * Indicates whether this canvas will use image smoothing, this is on by default in browsers
+       * @type Boolean
+       * @default
+       */
+      imageSmoothingEnabled: true,
 
-    /**
-     * Indicates whether this canvas will use image smoothing, this is on by default in browsers
-     * @type Boolean
-     * @default
-     */
-    imageSmoothingEnabled: true,
+      /**
+       * The transformation (in the format of Canvas transform) which focuses the viewport
+       * @type Array
+       * @default
+       */
+      viewportTransform: fabric.iMatrix.concat(),
 
-    /**
-     * The transformation (in the format of Canvas transform) which focuses the viewport
-     * @type Array
-     * @default
-     */
-    viewportTransform: fabric.iMatrix.concat(),
+      /**
+       * if set to false background image is not affected by viewport transform
+       * @since 1.6.3
+       * @type Boolean
+       * @default
+       */
+      backgroundVpt: true,
 
-    /**
-     * if set to false background image is not affected by viewport transform
-     * @since 1.6.3
-     * @type Boolean
-     * @default
-     */
-    backgroundVpt: true,
+      /**
+       * if set to false overlya image is not affected by viewport transform
+       * @since 1.6.3
+       * @type Boolean
+       * @default
+       */
+      overlayVpt: true,
 
-    /**
-     * if set to false overlya image is not affected by viewport transform
-     * @since 1.6.3
-     * @type Boolean
-     * @default
-     */
-    overlayVpt: true,
+      /**
+       * Callback; invoked right before object is about to be scaled/rotated
+       * @deprecated since 2.3.0
+       * Use before:transform event
+       */
+      onBeforeScaleRotate: function() {
+        /* NOOP */
+      },
 
-    /**
-     * Callback; invoked right before object is about to be scaled/rotated
-     * @deprecated since 2.3.0
-     * Use before:transform event
-     */
-    onBeforeScaleRotate: function () {
-      /* NOOP */
-    },
+      /**
+       * When true, canvas is scaled by devicePixelRatio for better rendering on retina screens
+       * @type Boolean
+       * @default
+       */
+      enableRetinaScaling: true,
 
-    /**
-     * When true, canvas is scaled by devicePixelRatio for better rendering on retina screens
-     * @type Boolean
-     * @default
-     */
-    enableRetinaScaling: true,
+      /**
+       * Describe canvas element extension over design
+       * properties are tl,tr,bl,br.
+       * if canvas is not zoomed/panned those points are the four corner of canvas
+       * if canvas is viewportTransformed you those points indicate the extension
+       * of canvas element in plain untrasformed coordinates
+       * The coordinates get updated with @method calcViewportBoundaries.
+       * @memberOf fabric.StaticCanvas.prototype
+       */
+      vptCoords: {},
 
-    /**
-     * Describe canvas element extension over design
-     * properties are tl,tr,bl,br.
-     * if canvas is not zoomed/panned those points are the four corner of canvas
-     * if canvas is viewportTransformed you those points indicate the extension
-     * of canvas element in plain untrasformed coordinates
-     * The coordinates get updated with @method calcViewportBoundaries.
-     * @memberOf fabric.StaticCanvas.prototype
-     */
-    vptCoords: { },
+      /**
+       * Based on vptCoords and object.aCoords, skip rendering of objects that
+       * are not included in current viewport.
+       * May greatly help in applications with crowded canvas and use of zoom/pan
+       * If One of the corner of the bounding box of the object is on the canvas
+       * the objects get rendered.
+       * @memberOf fabric.StaticCanvas.prototype
+       * @type Boolean
+       * @default
+       */
+      skipOffscreen: true,
 
-    /**
-     * Based on vptCoords and object.aCoords, skip rendering of objects that
-     * are not included in current viewport.
-     * May greatly help in applications with crowded canvas and use of zoom/pan
-     * If One of the corner of the bounding box of the object is on the canvas
-     * the objects get rendered.
-     * @memberOf fabric.StaticCanvas.prototype
-     * @type Boolean
-     * @default
-     */
-    skipOffscreen: true,
+      /**
+       * a fabricObject that, without stroke define a clipping area with their shape. filled in black
+       * the clipPath object gets used when the canvas has rendered, and the context is placed in the
+       * top left corner of the canvas.
+       * clipPath will clip away controls, if you do not want this to happen use controlsAboveOverlay = true
+       * @type fabric.Object
+       */
+      clipPath: undefined,
 
-    /**
-     * a fabricObject that, without stroke define a clipping area with their shape. filled in black
-     * the clipPath object gets used when the canvas has rendered, and the context is placed in the
-     * top left corner of the canvas.
-     * clipPath will clip away controls, if you do not want this to happen use controlsAboveOverlay = true
-     * @type fabric.Object
-     */
-    clipPath: undefined,
+      /**
+       * @private
+       * @param {HTMLElement | String} el &lt;canvas> element to initialize instance on
+       * @param {Object} [options] Options object
+       */
+      _initStatic: function(el, options) {
+        var cb = this.requestRenderAllBound;
+        this._objects = [];
+        this._createLowerCanvas(el);
+        this._initOptions(options);
+        this._setImageSmoothing();
+        // only initialize retina scaling once
+        if (!this.interactive) {
+          this._initRetinaScaling();
+        }
 
-    /**
-     * @private
-     * @param {HTMLElement | String} el &lt;canvas> element to initialize instance on
-     * @param {Object} [options] Options object
-     */
-    _initStatic: function(el, options) {
-      var cb = this.requestRenderAllBound;
-      this._objects = [];
-      this._createLowerCanvas(el);
-      this._initOptions(options);
-      this._setImageSmoothing();
-      // only initialize retina scaling once
-      if (!this.interactive) {
-        this._initRetinaScaling();
-      }
+        if (options.overlayImage) {
+          this.setOverlayImage(options.overlayImage, cb);
+        }
+        if (options.backgroundImage) {
+          this.setBackgroundImage(options.backgroundImage, cb);
+        }
+        if (options.backgroundColor) {
+          this.setBackgroundColor(options.backgroundColor, cb);
+        }
+        if (options.overlayColor) {
+          this.setOverlayColor(options.overlayColor, cb);
+        }
+        this.calcOffset();
+      },
 
-      if (options.overlayImage) {
-        this.setOverlayImage(options.overlayImage, cb);
-      }
-      if (options.backgroundImage) {
-        this.setBackgroundImage(options.backgroundImage, cb);
-      }
-      if (options.backgroundColor) {
-        this.setBackgroundColor(options.backgroundColor, cb);
-      }
-      if (options.overlayColor) {
-        this.setOverlayColor(options.overlayColor, cb);
-      }
-      this.calcOffset();
-    },
+      /**
+       * @private
+       */
+      _isRetinaScaling: function() {
+        return fabric.devicePixelRatio !== 1 && this.enableRetinaScaling;
+      },
 
-    /**
-     * @private
-     */
-    _isRetinaScaling: function() {
-      return (fabric.devicePixelRatio !== 1 && this.enableRetinaScaling);
-    },
+      /**
+       * @private
+       * @return {Number} retinaScaling if applied, otherwise 1;
+       */
+      getRetinaScaling: function() {
+        return this._isRetinaScaling() ? fabric.devicePixelRatio : 1;
+      },
 
-    /**
-     * @private
-     * @return {Number} retinaScaling if applied, otherwise 1;
-     */
-    getRetinaScaling: function() {
-      return this._isRetinaScaling() ? fabric.devicePixelRatio : 1;
-    },
+      /**
+       * @private
+       */
+      _initRetinaScaling: function() {
+        if (!this._isRetinaScaling()) {
+          return;
+        }
+        this.lowerCanvasEl.setAttribute(
+          "width",
+          this.width * fabric.devicePixelRatio
+        );
+        this.lowerCanvasEl.setAttribute(
+          "height",
+          this.height * fabric.devicePixelRatio
+        );
 
-    /**
-     * @private
-     */
-    _initRetinaScaling: function() {
-      if (!this._isRetinaScaling()) {
-        return;
-      }
-      this.lowerCanvasEl.setAttribute('width', this.width * fabric.devicePixelRatio);
-      this.lowerCanvasEl.setAttribute('height', this.height * fabric.devicePixelRatio);
+        this.contextContainer.scale(
+          fabric.devicePixelRatio,
+          fabric.devicePixelRatio
+        );
+      },
 
-      this.contextContainer.scale(fabric.devicePixelRatio, fabric.devicePixelRatio);
-    },
+      /**
+       * Calculates canvas element offset relative to the document
+       * This method is also attached as "resize" event handler of window
+       * @return {fabric.Canvas} instance
+       * @chainable
+       */
+      calcOffset: function() {
+        this._offset = getElementOffset(this.lowerCanvasEl);
+        return this;
+      },
 
-    /**
-     * Calculates canvas element offset relative to the document
-     * This method is also attached as "resize" event handler of window
-     * @return {fabric.Canvas} instance
-     * @chainable
-     */
-    calcOffset: function () {
-      this._offset = getElementOffset(this.lowerCanvasEl);
-      return this;
-    },
+      /**
+       * Sets {@link fabric.StaticCanvas#overlayImage|overlay image} for this canvas
+       * @param {(fabric.Image|String)} image fabric.Image instance or URL of an image to set overlay to
+       * @param {Function} callback callback to invoke when image is loaded and set as an overlay
+       * @param {Object} [options] Optional options to set for the {@link fabric.Image|overlay image}.
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       * @see {@link http://jsfiddle.net/fabricjs/MnzHT/|jsFiddle demo}
+       * @example <caption>Normal overlayImage with left/top = 0</caption>
+       * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
+       *   // Needed to position overlayImage at 0/0
+       *   originX: 'left',
+       *   originY: 'top'
+       * });
+       * @example <caption>overlayImage with different properties</caption>
+       * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
+       *   opacity: 0.5,
+       *   angle: 45,
+       *   left: 400,
+       *   top: 400,
+       *   originX: 'left',
+       *   originY: 'top'
+       * });
+       * @example <caption>Stretched overlayImage #1 - width/height correspond to canvas width/height</caption>
+       * fabric.Image.fromURL('http://fabricjs.com/assets/jail_cell_bars.png', function(img) {
+       *    img.set({width: canvas.width, height: canvas.height, originX: 'left', originY: 'top'});
+       *    canvas.setOverlayImage(img, canvas.renderAll.bind(canvas));
+       * });
+       * @example <caption>Stretched overlayImage #2 - width/height correspond to canvas width/height</caption>
+       * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
+       *   width: canvas.width,
+       *   height: canvas.height,
+       *   // Needed to position overlayImage at 0/0
+       *   originX: 'left',
+       *   originY: 'top'
+       * });
+       * @example <caption>overlayImage loaded from cross-origin</caption>
+       * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
+       *   opacity: 0.5,
+       *   angle: 45,
+       *   left: 400,
+       *   top: 400,
+       *   originX: 'left',
+       *   originY: 'top',
+       *   crossOrigin: 'anonymous'
+       * });
+       */
+      setOverlayImage: function(image, callback, options) {
+        return this.__setBgOverlayImage(
+          "overlayImage",
+          image,
+          callback,
+          options
+        );
+      },
 
-    /**
-     * Sets {@link fabric.StaticCanvas#overlayImage|overlay image} for this canvas
-     * @param {(fabric.Image|String)} image fabric.Image instance or URL of an image to set overlay to
-     * @param {Function} callback callback to invoke when image is loaded and set as an overlay
-     * @param {Object} [options] Optional options to set for the {@link fabric.Image|overlay image}.
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     * @see {@link http://jsfiddle.net/fabricjs/MnzHT/|jsFiddle demo}
-     * @example <caption>Normal overlayImage with left/top = 0</caption>
-     * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
-     *   // Needed to position overlayImage at 0/0
-     *   originX: 'left',
-     *   originY: 'top'
-     * });
-     * @example <caption>overlayImage with different properties</caption>
-     * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
-     *   opacity: 0.5,
-     *   angle: 45,
-     *   left: 400,
-     *   top: 400,
-     *   originX: 'left',
-     *   originY: 'top'
-     * });
-     * @example <caption>Stretched overlayImage #1 - width/height correspond to canvas width/height</caption>
-     * fabric.Image.fromURL('http://fabricjs.com/assets/jail_cell_bars.png', function(img) {
-     *    img.set({width: canvas.width, height: canvas.height, originX: 'left', originY: 'top'});
-     *    canvas.setOverlayImage(img, canvas.renderAll.bind(canvas));
-     * });
-     * @example <caption>Stretched overlayImage #2 - width/height correspond to canvas width/height</caption>
-     * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
-     *   width: canvas.width,
-     *   height: canvas.height,
-     *   // Needed to position overlayImage at 0/0
-     *   originX: 'left',
-     *   originY: 'top'
-     * });
-     * @example <caption>overlayImage loaded from cross-origin</caption>
-     * canvas.setOverlayImage('http://fabricjs.com/assets/jail_cell_bars.png', canvas.renderAll.bind(canvas), {
-     *   opacity: 0.5,
-     *   angle: 45,
-     *   left: 400,
-     *   top: 400,
-     *   originX: 'left',
-     *   originY: 'top',
-     *   crossOrigin: 'anonymous'
-     * });
-     */
-    setOverlayImage: function (image, callback, options) {
-      return this.__setBgOverlayImage('overlayImage', image, callback, options);
-    },
+      /**
+       * Sets {@link fabric.StaticCanvas#backgroundImage|background image} for this canvas
+       * @param {(fabric.Image|String)} image fabric.Image instance or URL of an image to set background to
+       * @param {Function} callback Callback to invoke when image is loaded and set as background
+       * @param {Object} [options] Optional options to set for the {@link fabric.Image|background image}.
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       * @see {@link http://jsfiddle.net/djnr8o7a/28/|jsFiddle demo}
+       * @example <caption>Normal backgroundImage with left/top = 0</caption>
+       * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
+       *   // Needed to position backgroundImage at 0/0
+       *   originX: 'left',
+       *   originY: 'top'
+       * });
+       * @example <caption>backgroundImage with different properties</caption>
+       * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
+       *   opacity: 0.5,
+       *   angle: 45,
+       *   left: 400,
+       *   top: 400,
+       *   originX: 'left',
+       *   originY: 'top'
+       * });
+       * @example <caption>Stretched backgroundImage #1 - width/height correspond to canvas width/height</caption>
+       * fabric.Image.fromURL('http://fabricjs.com/assets/honey_im_subtle.png', function(img) {
+       *    img.set({width: canvas.width, height: canvas.height, originX: 'left', originY: 'top'});
+       *    canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas));
+       * });
+       * @example <caption>Stretched backgroundImage #2 - width/height correspond to canvas width/height</caption>
+       * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
+       *   width: canvas.width,
+       *   height: canvas.height,
+       *   // Needed to position backgroundImage at 0/0
+       *   originX: 'left',
+       *   originY: 'top'
+       * });
+       * @example <caption>backgroundImage loaded from cross-origin</caption>
+       * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
+       *   opacity: 0.5,
+       *   angle: 45,
+       *   left: 400,
+       *   top: 400,
+       *   originX: 'left',
+       *   originY: 'top',
+       *   crossOrigin: 'anonymous'
+       * });
+       */
+      // TODO: fix stretched examples
+      setBackgroundImage: function(image, callback, options) {
+        return this.__setBgOverlayImage(
+          "backgroundImage",
+          image,
+          callback,
+          options
+        );
+      },
 
-    /**
-     * Sets {@link fabric.StaticCanvas#backgroundImage|background image} for this canvas
-     * @param {(fabric.Image|String)} image fabric.Image instance or URL of an image to set background to
-     * @param {Function} callback Callback to invoke when image is loaded and set as background
-     * @param {Object} [options] Optional options to set for the {@link fabric.Image|background image}.
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     * @see {@link http://jsfiddle.net/djnr8o7a/28/|jsFiddle demo}
-     * @example <caption>Normal backgroundImage with left/top = 0</caption>
-     * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
-     *   // Needed to position backgroundImage at 0/0
-     *   originX: 'left',
-     *   originY: 'top'
-     * });
-     * @example <caption>backgroundImage with different properties</caption>
-     * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
-     *   opacity: 0.5,
-     *   angle: 45,
-     *   left: 400,
-     *   top: 400,
-     *   originX: 'left',
-     *   originY: 'top'
-     * });
-     * @example <caption>Stretched backgroundImage #1 - width/height correspond to canvas width/height</caption>
-     * fabric.Image.fromURL('http://fabricjs.com/assets/honey_im_subtle.png', function(img) {
-     *    img.set({width: canvas.width, height: canvas.height, originX: 'left', originY: 'top'});
-     *    canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas));
-     * });
-     * @example <caption>Stretched backgroundImage #2 - width/height correspond to canvas width/height</caption>
-     * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
-     *   width: canvas.width,
-     *   height: canvas.height,
-     *   // Needed to position backgroundImage at 0/0
-     *   originX: 'left',
-     *   originY: 'top'
-     * });
-     * @example <caption>backgroundImage loaded from cross-origin</caption>
-     * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
-     *   opacity: 0.5,
-     *   angle: 45,
-     *   left: 400,
-     *   top: 400,
-     *   originX: 'left',
-     *   originY: 'top',
-     *   crossOrigin: 'anonymous'
-     * });
-     */
-    // TODO: fix stretched examples
-    setBackgroundImage: function (image, callback, options) {
-      return this.__setBgOverlayImage('backgroundImage', image, callback, options);
-    },
+      /**
+       * Sets {@link fabric.StaticCanvas#overlayColor|foreground color} for this canvas
+       * @param {(String|fabric.Pattern)} overlayColor Color or pattern to set foreground color to
+       * @param {Function} callback Callback to invoke when foreground color is set
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       * @see {@link http://jsfiddle.net/fabricjs/pB55h/|jsFiddle demo}
+       * @example <caption>Normal overlayColor - color value</caption>
+       * canvas.setOverlayColor('rgba(255, 73, 64, 0.6)', canvas.renderAll.bind(canvas));
+       * @example <caption>fabric.Pattern used as overlayColor</caption>
+       * canvas.setOverlayColor({
+       *   source: 'http://fabricjs.com/assets/escheresque_ste.png'
+       * }, canvas.renderAll.bind(canvas));
+       * @example <caption>fabric.Pattern used as overlayColor with repeat and offset</caption>
+       * canvas.setOverlayColor({
+       *   source: 'http://fabricjs.com/assets/escheresque_ste.png',
+       *   repeat: 'repeat',
+       *   offsetX: 200,
+       *   offsetY: 100
+       * }, canvas.renderAll.bind(canvas));
+       */
+      setOverlayColor: function(overlayColor, callback) {
+        return this.__setBgOverlayColor("overlayColor", overlayColor, callback);
+      },
 
-    /**
-     * Sets {@link fabric.StaticCanvas#overlayColor|foreground color} for this canvas
-     * @param {(String|fabric.Pattern)} overlayColor Color or pattern to set foreground color to
-     * @param {Function} callback Callback to invoke when foreground color is set
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     * @see {@link http://jsfiddle.net/fabricjs/pB55h/|jsFiddle demo}
-     * @example <caption>Normal overlayColor - color value</caption>
-     * canvas.setOverlayColor('rgba(255, 73, 64, 0.6)', canvas.renderAll.bind(canvas));
-     * @example <caption>fabric.Pattern used as overlayColor</caption>
-     * canvas.setOverlayColor({
-     *   source: 'http://fabricjs.com/assets/escheresque_ste.png'
-     * }, canvas.renderAll.bind(canvas));
-     * @example <caption>fabric.Pattern used as overlayColor with repeat and offset</caption>
-     * canvas.setOverlayColor({
-     *   source: 'http://fabricjs.com/assets/escheresque_ste.png',
-     *   repeat: 'repeat',
-     *   offsetX: 200,
-     *   offsetY: 100
-     * }, canvas.renderAll.bind(canvas));
-     */
-    setOverlayColor: function(overlayColor, callback) {
-      return this.__setBgOverlayColor('overlayColor', overlayColor, callback);
-    },
+      /**
+       * Sets {@link fabric.StaticCanvas#backgroundColor|background color} for this canvas
+       * @param {(String|fabric.Pattern)} backgroundColor Color or pattern to set background color to
+       * @param {Function} callback Callback to invoke when background color is set
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       * @see {@link http://jsfiddle.net/fabricjs/hXzvk/|jsFiddle demo}
+       * @example <caption>Normal backgroundColor - color value</caption>
+       * canvas.setBackgroundColor('rgba(255, 73, 64, 0.6)', canvas.renderAll.bind(canvas));
+       * @example <caption>fabric.Pattern used as backgroundColor</caption>
+       * canvas.setBackgroundColor({
+       *   source: 'http://fabricjs.com/assets/escheresque_ste.png'
+       * }, canvas.renderAll.bind(canvas));
+       * @example <caption>fabric.Pattern used as backgroundColor with repeat and offset</caption>
+       * canvas.setBackgroundColor({
+       *   source: 'http://fabricjs.com/assets/escheresque_ste.png',
+       *   repeat: 'repeat',
+       *   offsetX: 200,
+       *   offsetY: 100
+       * }, canvas.renderAll.bind(canvas));
+       */
+      setBackgroundColor: function(backgroundColor, callback) {
+        return this.__setBgOverlayColor(
+          "backgroundColor",
+          backgroundColor,
+          callback
+        );
+      },
 
-    /**
-     * Sets {@link fabric.StaticCanvas#backgroundColor|background color} for this canvas
-     * @param {(String|fabric.Pattern)} backgroundColor Color or pattern to set background color to
-     * @param {Function} callback Callback to invoke when background color is set
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     * @see {@link http://jsfiddle.net/fabricjs/hXzvk/|jsFiddle demo}
-     * @example <caption>Normal backgroundColor - color value</caption>
-     * canvas.setBackgroundColor('rgba(255, 73, 64, 0.6)', canvas.renderAll.bind(canvas));
-     * @example <caption>fabric.Pattern used as backgroundColor</caption>
-     * canvas.setBackgroundColor({
-     *   source: 'http://fabricjs.com/assets/escheresque_ste.png'
-     * }, canvas.renderAll.bind(canvas));
-     * @example <caption>fabric.Pattern used as backgroundColor with repeat and offset</caption>
-     * canvas.setBackgroundColor({
-     *   source: 'http://fabricjs.com/assets/escheresque_ste.png',
-     *   repeat: 'repeat',
-     *   offsetX: 200,
-     *   offsetY: 100
-     * }, canvas.renderAll.bind(canvas));
-     */
-    setBackgroundColor: function(backgroundColor, callback) {
-      return this.__setBgOverlayColor('backgroundColor', backgroundColor, callback);
-    },
+      /**
+       * @private
+       * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#dom-context-2d-imagesmoothingenabled|WhatWG Canvas Standard}
+       */
+      _setImageSmoothing: function() {
+        var ctx = this.getContext();
 
-    /**
-     * @private
-     * @see {@link http://www.whatwg.org/specs/web-apps/current-work/multipage/the-canvas-element.html#dom-context-2d-imagesmoothingenabled|WhatWG Canvas Standard}
-     */
-    _setImageSmoothing: function() {
-      var ctx = this.getContext();
+        ctx.imageSmoothingEnabled =
+          ctx.imageSmoothingEnabled ||
+          ctx.webkitImageSmoothingEnabled ||
+          ctx.mozImageSmoothingEnabled ||
+          ctx.msImageSmoothingEnabled ||
+          ctx.oImageSmoothingEnabled;
+        ctx.imageSmoothingEnabled = this.imageSmoothingEnabled;
+      },
 
-      ctx.imageSmoothingEnabled = ctx.imageSmoothingEnabled || ctx.webkitImageSmoothingEnabled
-        || ctx.mozImageSmoothingEnabled || ctx.msImageSmoothingEnabled || ctx.oImageSmoothingEnabled;
-      ctx.imageSmoothingEnabled = this.imageSmoothingEnabled;
-    },
+      /**
+       * @private
+       * @param {String} property Property to set ({@link fabric.StaticCanvas#backgroundImage|backgroundImage}
+       * or {@link fabric.StaticCanvas#overlayImage|overlayImage})
+       * @param {(fabric.Image|String|null)} image fabric.Image instance, URL of an image or null to set background or overlay to
+       * @param {Function} callback Callback to invoke when image is loaded and set as background or overlay
+       * @param {Object} [options] Optional options to set for the {@link fabric.Image|image}.
+       */
+      __setBgOverlayImage: function(property, image, callback, options) {
+        if (typeof image === "string") {
+          fabric.util.loadImage(
+            image,
+            function(img) {
+              if (img) {
+                var instance = new fabric.Image(img, options);
+                this[property] = instance;
+                instance.canvas = this;
+              }
+              callback && callback(img);
+            },
+            this,
+            options && options.crossOrigin
+          );
+        } else {
+          options && image.setOptions(options);
+          this[property] = image;
+          image && (image.canvas = this);
+          callback && callback(image);
+        }
 
-    /**
-     * @private
-     * @param {String} property Property to set ({@link fabric.StaticCanvas#backgroundImage|backgroundImage}
-     * or {@link fabric.StaticCanvas#overlayImage|overlayImage})
-     * @param {(fabric.Image|String|null)} image fabric.Image instance, URL of an image or null to set background or overlay to
-     * @param {Function} callback Callback to invoke when image is loaded and set as background or overlay
-     * @param {Object} [options] Optional options to set for the {@link fabric.Image|image}.
-     */
-    __setBgOverlayImage: function(property, image, callback, options) {
-      if (typeof image === 'string') {
-        fabric.util.loadImage(image, function(img) {
-          if (img) {
-            var instance = new fabric.Image(img, options);
-            this[property] = instance;
-            instance.canvas = this;
+        return this;
+      },
+
+      /**
+       * @private
+       * @param {String} property Property to set ({@link fabric.StaticCanvas#backgroundColor|backgroundColor}
+       * or {@link fabric.StaticCanvas#overlayColor|overlayColor})
+       * @param {(Object|String|null)} color Object with pattern information, color value or null
+       * @param {Function} [callback] Callback is invoked when color is set
+       */
+      __setBgOverlayColor: function(property, color, callback) {
+        this[property] = color;
+        this._initGradient(color, property);
+        this._initPattern(color, property, callback);
+        return this;
+      },
+
+      /**
+       * @private
+       */
+      _createCanvasElement: function() {
+        var element = createCanvasElement();
+        if (!element) {
+          throw CANVAS_INIT_ERROR;
+        }
+        if (!element.style) {
+          element.style = {};
+        }
+        if (typeof element.getContext === "undefined") {
+          throw CANVAS_INIT_ERROR;
+        }
+        return element;
+      },
+
+      /**
+       * @private
+       * @param {Object} [options] Options object
+       */
+      _initOptions: function(options) {
+        var lowerCanvasEl = this.lowerCanvasEl;
+        this._setOptions(options);
+
+        this.width = this.width || parseInt(lowerCanvasEl.width, 10) || 0;
+        this.height = this.height || parseInt(lowerCanvasEl.height, 10) || 0;
+
+        if (!this.lowerCanvasEl.style) {
+          return;
+        }
+
+        lowerCanvasEl.width = this.width;
+        lowerCanvasEl.height = this.height;
+
+        lowerCanvasEl.style.width = this.width + "px";
+        lowerCanvasEl.style.height = this.height + "px";
+
+        this.viewportTransform = this.viewportTransform.slice();
+      },
+
+      /**
+       * Creates a bottom canvas
+       * @private
+       * @param {HTMLElement} [canvasEl]
+       */
+      _createLowerCanvas: function(canvasEl) {
+        // canvasEl === 'HTMLCanvasElement' does not work on jsdom/node
+        if (canvasEl && canvasEl.getContext) {
+          this.lowerCanvasEl = canvasEl;
+        } else {
+          this.lowerCanvasEl =
+            fabric.util.getById(canvasEl) || this._createCanvasElement();
+        }
+
+        fabric.util.addClass(this.lowerCanvasEl, "lower-canvas");
+
+        if (this.interactive) {
+          this._applyCanvasStyle(this.lowerCanvasEl);
+        }
+
+        this.contextContainer = this.lowerCanvasEl.getContext("2d");
+      },
+
+      /**
+       * Returns canvas width (in px)
+       * @return {Number}
+       */
+      getWidth: function() {
+        return this.width;
+      },
+
+      /**
+       * Returns canvas height (in px)
+       * @return {Number}
+       */
+      getHeight: function() {
+        return this.height;
+      },
+
+      /**
+       * Sets width of this canvas instance
+       * @param {Number|String} value                         Value to set width to
+       * @param {Object}        [options]                     Options object
+       * @param {Boolean}       [options.backstoreOnly=false] Set the given dimensions only as canvas backstore dimensions
+       * @param {Boolean}       [options.cssOnly=false]       Set the given dimensions only as css dimensions
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      setWidth: function(value, options) {
+        return this.setDimensions({ width: value }, options);
+      },
+
+      /**
+       * Sets height of this canvas instance
+       * @param {Number|String} value                         Value to set height to
+       * @param {Object}        [options]                     Options object
+       * @param {Boolean}       [options.backstoreOnly=false] Set the given dimensions only as canvas backstore dimensions
+       * @param {Boolean}       [options.cssOnly=false]       Set the given dimensions only as css dimensions
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      setHeight: function(value, options) {
+        return this.setDimensions({ height: value }, options);
+      },
+
+      /**
+       * Sets dimensions (width, height) of this canvas instance. when options.cssOnly flag active you should also supply the unit of measure (px/%/em)
+       * @param {Object}        dimensions                    Object with width/height properties
+       * @param {Number|String} [dimensions.width]            Width of canvas element
+       * @param {Number|String} [dimensions.height]           Height of canvas element
+       * @param {Object}        [options]                     Options object
+       * @param {Boolean}       [options.backstoreOnly=false] Set the given dimensions only as canvas backstore dimensions
+       * @param {Boolean}       [options.cssOnly=false]       Set the given dimensions only as css dimensions
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      setDimensions: function(dimensions, options) {
+        var cssValue;
+
+        options = options || {};
+
+        for (var prop in dimensions) {
+          cssValue = dimensions[prop];
+
+          if (!options.cssOnly) {
+            this._setBackstoreDimension(prop, dimensions[prop]);
+            cssValue += "px";
+            this.hasLostContext = true;
           }
-          callback && callback(img);
-        }, this, options && options.crossOrigin);
-      }
-      else {
-        options && image.setOptions(options);
-        this[property] = image;
-        image && (image.canvas = this);
-        callback && callback(image);
-      }
 
-      return this;
-    },
-
-    /**
-     * @private
-     * @param {String} property Property to set ({@link fabric.StaticCanvas#backgroundColor|backgroundColor}
-     * or {@link fabric.StaticCanvas#overlayColor|overlayColor})
-     * @param {(Object|String|null)} color Object with pattern information, color value or null
-     * @param {Function} [callback] Callback is invoked when color is set
-     */
-    __setBgOverlayColor: function(property, color, callback) {
-      this[property] = color;
-      this._initGradient(color, property);
-      this._initPattern(color, property, callback);
-      return this;
-    },
-
-    /**
-     * @private
-     */
-    _createCanvasElement: function() {
-      var element = createCanvasElement();
-      if (!element) {
-        throw CANVAS_INIT_ERROR;
-      }
-      if (!element.style) {
-        element.style = { };
-      }
-      if (typeof element.getContext === 'undefined') {
-        throw CANVAS_INIT_ERROR;
-      }
-      return element;
-    },
-
-    /**
-     * @private
-     * @param {Object} [options] Options object
-     */
-    _initOptions: function (options) {
-      var lowerCanvasEl = this.lowerCanvasEl;
-      this._setOptions(options);
-
-      this.width = this.width || parseInt(lowerCanvasEl.width, 10) || 0;
-      this.height = this.height || parseInt(lowerCanvasEl.height, 10) || 0;
-
-      if (!this.lowerCanvasEl.style) {
-        return;
-      }
-
-      lowerCanvasEl.width = this.width;
-      lowerCanvasEl.height = this.height;
-
-      lowerCanvasEl.style.width = this.width + 'px';
-      lowerCanvasEl.style.height = this.height + 'px';
-
-      this.viewportTransform = this.viewportTransform.slice();
-    },
-
-    /**
-     * Creates a bottom canvas
-     * @private
-     * @param {HTMLElement} [canvasEl]
-     */
-    _createLowerCanvas: function (canvasEl) {
-      // canvasEl === 'HTMLCanvasElement' does not work on jsdom/node
-      if (canvasEl && canvasEl.getContext) {
-        this.lowerCanvasEl = canvasEl;
-      }
-      else {
-        this.lowerCanvasEl = fabric.util.getById(canvasEl) || this._createCanvasElement();
-      }
-
-      fabric.util.addClass(this.lowerCanvasEl, 'lower-canvas');
-
-      if (this.interactive) {
-        this._applyCanvasStyle(this.lowerCanvasEl);
-      }
-
-      this.contextContainer = this.lowerCanvasEl.getContext('2d');
-    },
-
-    /**
-     * Returns canvas width (in px)
-     * @return {Number}
-     */
-    getWidth: function () {
-      return this.width;
-    },
-
-    /**
-     * Returns canvas height (in px)
-     * @return {Number}
-     */
-    getHeight: function () {
-      return this.height;
-    },
-
-    /**
-     * Sets width of this canvas instance
-     * @param {Number|String} value                         Value to set width to
-     * @param {Object}        [options]                     Options object
-     * @param {Boolean}       [options.backstoreOnly=false] Set the given dimensions only as canvas backstore dimensions
-     * @param {Boolean}       [options.cssOnly=false]       Set the given dimensions only as css dimensions
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    setWidth: function (value, options) {
-      return this.setDimensions({ width: value }, options);
-    },
-
-    /**
-     * Sets height of this canvas instance
-     * @param {Number|String} value                         Value to set height to
-     * @param {Object}        [options]                     Options object
-     * @param {Boolean}       [options.backstoreOnly=false] Set the given dimensions only as canvas backstore dimensions
-     * @param {Boolean}       [options.cssOnly=false]       Set the given dimensions only as css dimensions
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    setHeight: function (value, options) {
-      return this.setDimensions({ height: value }, options);
-    },
-
-    /**
-     * Sets dimensions (width, height) of this canvas instance. when options.cssOnly flag active you should also supply the unit of measure (px/%/em)
-     * @param {Object}        dimensions                    Object with width/height properties
-     * @param {Number|String} [dimensions.width]            Width of canvas element
-     * @param {Number|String} [dimensions.height]           Height of canvas element
-     * @param {Object}        [options]                     Options object
-     * @param {Boolean}       [options.backstoreOnly=false] Set the given dimensions only as canvas backstore dimensions
-     * @param {Boolean}       [options.cssOnly=false]       Set the given dimensions only as css dimensions
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    setDimensions: function (dimensions, options) {
-      var cssValue;
-
-      options = options || {};
-
-      for (var prop in dimensions) {
-        cssValue = dimensions[prop];
+          if (!options.backstoreOnly) {
+            this._setCssDimension(prop, cssValue);
+          }
+        }
+        if (this._isCurrentlyDrawing) {
+          this.freeDrawingBrush && this.freeDrawingBrush._setBrushStyles();
+        }
+        this._initRetinaScaling();
+        this._setImageSmoothing();
+        this.calcOffset();
 
         if (!options.cssOnly) {
-          this._setBackstoreDimension(prop, dimensions[prop]);
-          cssValue += 'px';
-          this.hasLostContext = true;
+          this.requestRenderAll();
         }
 
-        if (!options.backstoreOnly) {
-          this._setCssDimension(prop, cssValue);
+        return this;
+      },
+
+      /**
+       * Helper for setting width/height
+       * @private
+       * @param {String} prop property (width|height)
+       * @param {Number} value value to set property to
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      _setBackstoreDimension: function(prop, value) {
+        this.lowerCanvasEl[prop] = value;
+
+        if (this.upperCanvasEl) {
+          this.upperCanvasEl[prop] = value;
         }
-      }
-      if (this._isCurrentlyDrawing) {
-        this.freeDrawingBrush && this.freeDrawingBrush._setBrushStyles();
-      }
-      this._initRetinaScaling();
-      this._setImageSmoothing();
-      this.calcOffset();
 
-      if (!options.cssOnly) {
-        this.requestRenderAll();
-      }
+        if (this.cacheCanvasEl) {
+          this.cacheCanvasEl[prop] = value;
+        }
 
-      return this;
-    },
+        this[prop] = value;
 
-    /**
-     * Helper for setting width/height
-     * @private
-     * @param {String} prop property (width|height)
-     * @param {Number} value value to set property to
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    _setBackstoreDimension: function (prop, value) {
-      this.lowerCanvasEl[prop] = value;
+        return this;
+      },
 
-      if (this.upperCanvasEl) {
-        this.upperCanvasEl[prop] = value;
-      }
+      /**
+       * Helper for setting css width/height
+       * @private
+       * @param {String} prop property (width|height)
+       * @param {String} value value to set property to
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      _setCssDimension: function(prop, value) {
+        this.lowerCanvasEl.style[prop] = value;
 
-      if (this.cacheCanvasEl) {
-        this.cacheCanvasEl[prop] = value;
-      }
+        if (this.upperCanvasEl) {
+          this.upperCanvasEl.style[prop] = value;
+        }
 
-      this[prop] = value;
+        if (this.wrapperEl) {
+          this.wrapperEl.style[prop] = value;
+        }
 
-      return this;
-    },
+        return this;
+      },
 
-    /**
-     * Helper for setting css width/height
-     * @private
-     * @param {String} prop property (width|height)
-     * @param {String} value value to set property to
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    _setCssDimension: function (prop, value) {
-      this.lowerCanvasEl.style[prop] = value;
+      /**
+       * Returns canvas zoom level
+       * @return {Number}
+       */
+      getZoom: function() {
+        return this.viewportTransform[0];
+      },
 
-      if (this.upperCanvasEl) {
-        this.upperCanvasEl.style[prop] = value;
-      }
+      /**
+       * Sets viewport transform of this canvas instance
+       * @param {Array} vpt the transform in the form of context.transform
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      setViewportTransform: function(vpt) {
+        var activeObject = this._activeObject,
+          object,
+          ignoreVpt = false,
+          skipAbsolute = true,
+          i,
+          len;
+        this.viewportTransform = vpt;
+        for (i = 0, len = this._objects.length; i < len; i++) {
+          object = this._objects[i];
+          object.group || object.setCoords(ignoreVpt, skipAbsolute);
+        }
+        if (activeObject && activeObject.type === "activeSelection") {
+          activeObject.setCoords(ignoreVpt, skipAbsolute);
+        }
+        this.calcViewportBoundaries();
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
 
-      if (this.wrapperEl) {
-        this.wrapperEl.style[prop] = value;
-      }
+      /**
+       * Sets zoom level of this canvas instance, zoom centered around point
+       * @param {fabric.Point} point to zoom with respect to
+       * @param {Number} value to set zoom to, less than 1 zooms out
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      zoomToPoint: function(point, value) {
+        // TODO: just change the scale, preserve other transformations
+        var before = point,
+          vpt = this.viewportTransform.slice(0);
+        point = transformPoint(point, invertTransform(this.viewportTransform));
+        vpt[0] = value;
+        vpt[3] = value;
+        var after = transformPoint(point, vpt);
+        vpt[4] += before.x - after.x;
+        vpt[5] += before.y - after.y;
+        return this.setViewportTransform(vpt);
+      },
 
-      return this;
-    },
+      /**
+       * Sets zoom level of this canvas instance
+       * @param {Number} value to set zoom to, less than 1 zooms out
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      setZoom: function(value) {
+        this.zoomToPoint(new fabric.Point(0, 0), value);
+        return this;
+      },
 
-    /**
-     * Returns canvas zoom level
-     * @return {Number}
-     */
-    getZoom: function () {
-      return this.viewportTransform[0];
-    },
+      /**
+       * Pan viewport so as to place point at top left corner of canvas
+       * @param {fabric.Point} point to move to
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      absolutePan: function(point) {
+        var vpt = this.viewportTransform.slice(0);
+        vpt[4] = -point.x;
+        vpt[5] = -point.y;
+        return this.setViewportTransform(vpt);
+      },
 
-    /**
-     * Sets viewport transform of this canvas instance
-     * @param {Array} vpt the transform in the form of context.transform
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    setViewportTransform: function (vpt) {
-      var activeObject = this._activeObject, object, ignoreVpt = false, skipAbsolute = true, i, len;
-      this.viewportTransform = vpt;
-      for (i = 0, len = this._objects.length; i < len; i++) {
-        object = this._objects[i];
-        object.group || object.setCoords(ignoreVpt, skipAbsolute);
-      }
-      if (activeObject && activeObject.type === 'activeSelection') {
-        activeObject.setCoords(ignoreVpt, skipAbsolute);
-      }
-      this.calcViewportBoundaries();
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
+      /**
+       * Pans viewpoint relatively
+       * @param {fabric.Point} point (position vector) to move by
+       * @return {fabric.Canvas} instance
+       * @chainable true
+       */
+      relativePan: function(point) {
+        return this.absolutePan(
+          new fabric.Point(
+            -point.x - this.viewportTransform[4],
+            -point.y - this.viewportTransform[5]
+          )
+        );
+      },
 
-    /**
-     * Sets zoom level of this canvas instance, zoom centered around point
-     * @param {fabric.Point} point to zoom with respect to
-     * @param {Number} value to set zoom to, less than 1 zooms out
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    zoomToPoint: function (point, value) {
-      // TODO: just change the scale, preserve other transformations
-      var before = point, vpt = this.viewportTransform.slice(0);
-      point = transformPoint(point, invertTransform(this.viewportTransform));
-      vpt[0] = value;
-      vpt[3] = value;
-      var after = transformPoint(point, vpt);
-      vpt[4] += before.x - after.x;
-      vpt[5] += before.y - after.y;
-      return this.setViewportTransform(vpt);
-    },
+      /**
+       * Returns &lt;canvas> element corresponding to this instance
+       * @return {HTMLCanvasElement}
+       */
+      getElement: function() {
+        return this.lowerCanvasEl;
+      },
 
-    /**
-     * Sets zoom level of this canvas instance
-     * @param {Number} value to set zoom to, less than 1 zooms out
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    setZoom: function (value) {
-      this.zoomToPoint(new fabric.Point(0, 0), value);
-      return this;
-    },
+      /**
+       * @private
+       * @param {fabric.Object} obj Object that was added
+       */
+      _onObjectAdded: function(obj) {
+        this.stateful && obj.setupState();
+        obj._set("canvas", this);
+        obj.setCoords();
+        this.fire("object:added", { target: obj });
+        obj.fire("added");
+      },
 
-    /**
-     * Pan viewport so as to place point at top left corner of canvas
-     * @param {fabric.Point} point to move to
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    absolutePan: function (point) {
-      var vpt = this.viewportTransform.slice(0);
-      vpt[4] = -point.x;
-      vpt[5] = -point.y;
-      return this.setViewportTransform(vpt);
-    },
+      /**
+       * @private
+       * @param {fabric.Object} obj Object that was removed
+       */
+      _onObjectRemoved: function(obj) {
+        this.fire("object:removed", { target: obj });
+        obj.fire("removed");
+        delete obj.canvas;
+      },
 
-    /**
-     * Pans viewpoint relatively
-     * @param {fabric.Point} point (position vector) to move by
-     * @return {fabric.Canvas} instance
-     * @chainable true
-     */
-    relativePan: function (point) {
-      return this.absolutePan(new fabric.Point(
-        -point.x - this.viewportTransform[4],
-        -point.y - this.viewportTransform[5]
-      ));
-    },
+      /**
+       * Clears specified context of canvas element
+       * @param {CanvasRenderingContext2D} ctx Context to clear
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      clearContext: function(ctx) {
+        ctx.clearRect(0, 0, this.width, this.height);
+        return this;
+      },
 
-    /**
-     * Returns &lt;canvas> element corresponding to this instance
-     * @return {HTMLCanvasElement}
-     */
-    getElement: function () {
-      return this.lowerCanvasEl;
-    },
+      /**
+       * Returns context of canvas where objects are drawn
+       * @return {CanvasRenderingContext2D}
+       */
+      getContext: function() {
+        return this.contextContainer;
+      },
 
-    /**
-     * @private
-     * @param {fabric.Object} obj Object that was added
-     */
-    _onObjectAdded: function(obj) {
-      this.stateful && obj.setupState();
-      obj._set('canvas', this);
-      obj.setCoords();
-      this.fire('object:added', { target: obj });
-      obj.fire('added');
-    },
+      /**
+       * Clears all contexts (background, main, top) of an instance
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      clear: function() {
+        this._objects.length = 0;
+        this.backgroundImage = null;
+        this.overlayImage = null;
+        this.backgroundColor = "";
+        this.overlayColor = "";
+        if (this._hasITextHandlers) {
+          this.off("mouse:up", this._mouseUpITextHandler);
+          this._iTextInstances = null;
+          this._hasITextHandlers = false;
+        }
+        this.clearContext(this.contextContainer);
+        this.fire("canvas:cleared");
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
 
-    /**
-     * @private
-     * @param {fabric.Object} obj Object that was removed
-     */
-    _onObjectRemoved: function(obj) {
-      this.fire('object:removed', { target: obj });
-      obj.fire('removed');
-      delete obj.canvas;
-    },
+      /**
+       * Renders the canvas
+       * @return {fabric.Canvas} instance
+       * @chainable
+       */
+      renderAll: function() {
+        var canvasToDrawOn = this.contextContainer;
+        this.renderCanvas(canvasToDrawOn, this._objects);
+        return this;
+      },
 
-    /**
-     * Clears specified context of canvas element
-     * @param {CanvasRenderingContext2D} ctx Context to clear
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    clearContext: function(ctx) {
-      ctx.clearRect(0, 0, this.width, this.height);
-      return this;
-    },
-
-    /**
-     * Returns context of canvas where objects are drawn
-     * @return {CanvasRenderingContext2D}
-     */
-    getContext: function () {
-      return this.contextContainer;
-    },
-
-    /**
-     * Clears all contexts (background, main, top) of an instance
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    clear: function () {
-      this._objects.length = 0;
-      this.backgroundImage = null;
-      this.overlayImage = null;
-      this.backgroundColor = '';
-      this.overlayColor = '';
-      if (this._hasITextHandlers) {
-        this.off('mouse:up', this._mouseUpITextHandler);
-        this._iTextInstances = null;
-        this._hasITextHandlers = false;
-      }
-      this.clearContext(this.contextContainer);
-      this.fire('canvas:cleared');
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
-
-    /**
-     * Renders the canvas
-     * @return {fabric.Canvas} instance
-     * @chainable
-     */
-    renderAll: function () {
-      var canvasToDrawOn = this.contextContainer;
-      this.renderCanvas(canvasToDrawOn, this._objects);
-      return this;
-    },
-
-    /**
-     * Function created to be instance bound at initialization
-     * used in requestAnimationFrame rendering
-     * Let the fabricJS call it. If you call it manually you could have more
-     * animationFrame stacking on to of each other
-     * for an imperative rendering, use canvas.renderAll
-     * @private
-     * @return {fabric.Canvas} instance
-     * @chainable
-     */
-    renderAndReset: function() {
-      this.isRendering = 0;
-      this.renderAll();
-    },
-
-    /**
-     * Append a renderAll request to next animation frame.
-     * unless one is already in progress, in that case nothing is done
-     * a boolean flag will avoid appending more.
-     * @return {fabric.Canvas} instance
-     * @chainable
-     */
-    requestRenderAll: function () {
-      if (!this.isRendering) {
-        this.isRendering = fabric.util.requestAnimFrame(this.renderAndResetBound);
-      }
-      return this;
-    },
-
-    /**
-     * Calculate the position of the 4 corner of canvas with current viewportTransform.
-     * helps to determinate when an object is in the current rendering viewport using
-     * object absolute coordinates ( aCoords )
-     * @return {Object} points.tl
-     * @chainable
-     */
-    calcViewportBoundaries: function() {
-      var points = { }, width = this.width, height = this.height,
-          iVpt = invertTransform(this.viewportTransform);
-      points.tl = transformPoint({ x: 0, y: 0 }, iVpt);
-      points.br = transformPoint({ x: width, y: height }, iVpt);
-      points.tr = new fabric.Point(points.br.x, points.tl.y);
-      points.bl = new fabric.Point(points.tl.x, points.br.y);
-      this.vptCoords = points;
-      return points;
-    },
-
-    cancelRequestedRender: function() {
-      if (this.isRendering) {
-        fabric.util.cancelAnimFrame(this.isRendering);
+      /**
+       * Function created to be instance bound at initialization
+       * used in requestAnimationFrame rendering
+       * Let the fabricJS call it. If you call it manually you could have more
+       * animationFrame stacking on to of each other
+       * for an imperative rendering, use canvas.renderAll
+       * @private
+       * @return {fabric.Canvas} instance
+       * @chainable
+       */
+      renderAndReset: function() {
         this.isRendering = 0;
-      }
-    },
+        this.renderAll();
+      },
 
-    /**
-     * Renders background, objects, overlay and controls.
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {Array} objects to render
-     * @return {fabric.Canvas} instance
-     * @chainable
-     */
-    renderCanvas: function(ctx, objects) {
-      var v = this.viewportTransform, path = this.clipPath;
-      this.cancelRequestedRender();
-      this.calcViewportBoundaries();
-      this.clearContext(ctx);
-      this.fire('before:render', { ctx: ctx, });
-      if (this.clipTo) {
-        fabric.util.clipContext(this, ctx);
-      }
-      this._renderBackground(ctx);
-
-      ctx.save();
-      //apply viewport transform once for all rendering process
-      ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
-      this._renderObjects(ctx, objects);
-      ctx.restore();
-      if (!this.controlsAboveOverlay && this.interactive) {
-        this.drawControls(ctx);
-      }
-      if (this.clipTo) {
-        ctx.restore();
-      }
-      if (path) {
-        path.canvas = this;
-        // needed to setup a couple of variables
-        path.shouldCache();
-        path._transformDone = true;
-        path.renderCache({ forClipping: true });
-        this.drawClipPathOnCanvas(ctx);
-      }
-      this._renderOverlay(ctx);
-      if (this.controlsAboveOverlay && this.interactive) {
-        this.drawControls(ctx);
-      }
-      this.fire('after:render', { ctx: ctx, });
-    },
-
-    /**
-     * Paint the cached clipPath on the lowerCanvasEl
-     * @param {CanvasRenderingContext2D} ctx Context to render on
-     */
-    drawClipPathOnCanvas: function(ctx) {
-      var v = this.viewportTransform, path = this.clipPath;
-      ctx.save();
-      ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
-      // DEBUG: uncomment this line, comment the following
-      // ctx.globalAlpha = 0.4;
-      ctx.globalCompositeOperation = 'destination-in';
-      path.transform(ctx);
-      ctx.scale(1 / path.zoomX, 1 / path.zoomY);
-      ctx.drawImage(path._cacheCanvas, -path.cacheTranslationX, -path.cacheTranslationY);
-      ctx.restore();
-    },
-
-    /**
-     * @private
-     * @param {CanvasRenderingContext2D} ctx Context to render on
-     * @param {Array} objects to render
-     */
-    _renderObjects: function(ctx, objects) {
-      var i, len;
-      for (i = 0, len = objects.length; i < len; ++i) {
-        objects[i] && objects[i].render(ctx);
-      }
-    },
-
-    /**
-     * @private
-     * @param {CanvasRenderingContext2D} ctx Context to render on
-     * @param {string} property 'background' or 'overlay'
-     */
-    _renderBackgroundOrOverlay: function(ctx, property) {
-      var object = this[property + 'Color'], v;
-      if (object) {
-        ctx.fillStyle = object.toLive
-          ? object.toLive(ctx, this)
-          : object;
-
-        ctx.fillRect(
-          object.offsetX || 0,
-          object.offsetY || 0,
-          this.width,
-          this.height);
-      }
-      object = this[property + 'Image'];
-      if (object) {
-        if (this[property + 'Vpt']) {
-          v = this.viewportTransform;
-          ctx.save();
-          ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+      /**
+       * Append a renderAll request to next animation frame.
+       * unless one is already in progress, in that case nothing is done
+       * a boolean flag will avoid appending more.
+       * @return {fabric.Canvas} instance
+       * @chainable
+       */
+      requestRenderAll: function() {
+        if (!this.isRendering) {
+          this.isRendering = fabric.util.requestAnimFrame(
+            this.renderAndResetBound
+          );
         }
-        object.render(ctx);
-        this[property + 'Vpt'] && ctx.restore();
-      }
-    },
+        return this;
+      },
 
-    /**
-     * @private
-     * @param {CanvasRenderingContext2D} ctx Context to render on
-     */
-    _renderBackground: function(ctx) {
-      this._renderBackgroundOrOverlay(ctx, 'background');
-    },
-
-    /**
-     * @private
-     * @param {CanvasRenderingContext2D} ctx Context to render on
-     */
-    _renderOverlay: function(ctx) {
-      this._renderBackgroundOrOverlay(ctx, 'overlay');
-    },
-
-    /**
-     * Returns coordinates of a center of canvas.
-     * Returned value is an object with top and left properties
-     * @return {Object} object with "top" and "left" number values
-     */
-    getCenter: function () {
-      return {
-        top: this.height / 2,
-        left: this.width / 2
-      };
-    },
-
-    /**
-     * Centers object horizontally in the canvas
-     * @param {fabric.Object} object Object to center horizontally
-     * @return {fabric.Canvas} thisArg
-     */
-    centerObjectH: function (object) {
-      return this._centerObject(object, new fabric.Point(this.getCenter().left, object.getCenterPoint().y));
-    },
-
-    /**
-     * Centers object vertically in the canvas
-     * @param {fabric.Object} object Object to center vertically
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    centerObjectV: function (object) {
-      return this._centerObject(object, new fabric.Point(object.getCenterPoint().x, this.getCenter().top));
-    },
-
-    /**
-     * Centers object vertically and horizontally in the canvas
-     * @param {fabric.Object} object Object to center vertically and horizontally
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    centerObject: function(object) {
-      var center = this.getCenter();
-
-      return this._centerObject(object, new fabric.Point(center.left, center.top));
-    },
-
-    /**
-     * Centers object vertically and horizontally in the viewport
-     * @param {fabric.Object} object Object to center vertically and horizontally
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    viewportCenterObject: function(object) {
-      var vpCenter = this.getVpCenter();
-
-      return this._centerObject(object, vpCenter);
-    },
-
-    /**
-     * Centers object horizontally in the viewport, object.top is unchanged
-     * @param {fabric.Object} object Object to center vertically and horizontally
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    viewportCenterObjectH: function(object) {
-      var vpCenter = this.getVpCenter();
-      this._centerObject(object, new fabric.Point(vpCenter.x, object.getCenterPoint().y));
-      return this;
-    },
-
-    /**
-     * Centers object Vertically in the viewport, object.top is unchanged
-     * @param {fabric.Object} object Object to center vertically and horizontally
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    viewportCenterObjectV: function(object) {
-      var vpCenter = this.getVpCenter();
-
-      return this._centerObject(object, new fabric.Point(object.getCenterPoint().x, vpCenter.y));
-    },
-
-    /**
-     * Calculate the point in canvas that correspond to the center of actual viewport.
-     * @return {fabric.Point} vpCenter, viewport center
-     * @chainable
-     */
-    getVpCenter: function() {
-      var center = this.getCenter(),
+      /**
+       * Calculate the position of the 4 corner of canvas with current viewportTransform.
+       * helps to determinate when an object is in the current rendering viewport using
+       * object absolute coordinates ( aCoords )
+       * @return {Object} points.tl
+       * @chainable
+       */
+      calcViewportBoundaries: function() {
+        var points = {},
+          width = this.width,
+          height = this.height,
           iVpt = invertTransform(this.viewportTransform);
-      return transformPoint({ x: center.left, y: center.top }, iVpt);
-    },
+        points.tl = transformPoint({ x: 0, y: 0 }, iVpt);
+        points.br = transformPoint({ x: width, y: height }, iVpt);
+        points.tr = new fabric.Point(points.br.x, points.tl.y);
+        points.bl = new fabric.Point(points.tl.x, points.br.y);
+        this.vptCoords = points;
+        return points;
+      },
 
-    /**
-     * @private
-     * @param {fabric.Object} object Object to center
-     * @param {fabric.Point} center Center point
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    _centerObject: function(object, center) {
-      object.setPositionByOrigin(center, 'center', 'center');
-      object.setCoords();
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
+      cancelRequestedRender: function() {
+        if (this.isRendering) {
+          fabric.util.cancelAnimFrame(this.isRendering);
+          this.isRendering = 0;
+        }
+      },
 
-    /**
-     * Returs dataless JSON representation of canvas
-     * @param {Array} [propertiesToInclude] Any properties that you might want to additionally include in the output
-     * @return {String} json string
-     */
-    toDatalessJSON: function (propertiesToInclude) {
-      return this.toDatalessObject(propertiesToInclude);
-    },
+      /**
+       * Renders background, objects, overlay and controls.
+       * @param {CanvasRenderingContext2D} ctx
+       * @param {Array} objects to render
+       * @return {fabric.Canvas} instance
+       * @chainable
+       */
+      renderCanvas: function(ctx, objects) {
+        var v = this.viewportTransform,
+          path = this.clipPath;
+        this.cancelRequestedRender();
+        this.calcViewportBoundaries();
+        this.clearContext(ctx);
+        this.fire("before:render", { ctx: ctx });
+        if (this.clipTo) {
+          fabric.util.clipContext(this, ctx);
+        }
+        this._renderBackground(ctx);
 
-    /**
-     * Returns object representation of canvas
-     * @param {Array} [propertiesToInclude] Any properties that you might want to additionally include in the output
-     * @return {Object} object representation of an instance
-     */
-    toObject: function (propertiesToInclude) {
-      return this._toObjectMethod('toObject', propertiesToInclude);
-    },
+        ctx.save();
+        //apply viewport transform once for all rendering process
+        ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+        this._renderObjects(ctx, objects);
+        ctx.restore();
+        if (!this.controlsAboveOverlay && this.interactive) {
+          this.drawControls(ctx);
+        }
+        if (this.clipTo) {
+          ctx.restore();
+        }
+        if (path) {
+          path.canvas = this;
+          // needed to setup a couple of variables
+          path.shouldCache();
+          path._transformDone = true;
+          path.renderCache({ forClipping: true });
+          this.drawClipPathOnCanvas(ctx);
+        }
+        this._renderOverlay(ctx);
+        if (this.controlsAboveOverlay && this.interactive) {
+          this.drawControls(ctx);
+        }
+        this.fire("after:render", { ctx: ctx });
+      },
 
-    /**
-     * Returns dataless object representation of canvas
-     * @param {Array} [propertiesToInclude] Any properties that you might want to additionally include in the output
-     * @return {Object} object representation of an instance
-     */
-    toDatalessObject: function (propertiesToInclude) {
-      return this._toObjectMethod('toDatalessObject', propertiesToInclude);
-    },
+      /**
+       * Paint the cached clipPath on the lowerCanvasEl
+       * @param {CanvasRenderingContext2D} ctx Context to render on
+       */
+      drawClipPathOnCanvas: function(ctx) {
+        var v = this.viewportTransform,
+          path = this.clipPath;
+        ctx.save();
+        ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+        // DEBUG: uncomment this line, comment the following
+        // ctx.globalAlpha = 0.4;
+        ctx.globalCompositeOperation = "destination-in";
+        path.transform(ctx);
+        ctx.scale(1 / path.zoomX, 1 / path.zoomY);
+        ctx.drawImage(
+          path._cacheCanvas,
+          -path.cacheTranslationX,
+          -path.cacheTranslationY
+        );
+        ctx.restore();
+      },
 
-    /**
-     * @private
-     */
-    _toObjectMethod: function (methodName, propertiesToInclude) {
+      /**
+       * @private
+       * @param {CanvasRenderingContext2D} ctx Context to render on
+       * @param {Array} objects to render
+       */
+      _renderObjects: function(ctx, objects) {
+        var i, len;
+        for (i = 0, len = objects.length; i < len; ++i) {
+          objects[i] && objects[i].render(ctx);
+        }
+      },
 
-      var clipPath = this.clipPath, data = {
-        version: fabric.version,
-        objects: this._toObjects(methodName, propertiesToInclude),
-      };
-      if (clipPath) {
-        data.clipPath = this._toObjectMethod(clipPath, methodName, propertiesToInclude);
-      }
-      extend(data, this.__serializeBgOverlay(methodName, propertiesToInclude));
+      /**
+       * @private
+       * @param {CanvasRenderingContext2D} ctx Context to render on
+       * @param {string} property 'background' or 'overlay'
+       */
+      _renderBackgroundOrOverlay: function(ctx, property) {
+        var object = this[property + "Color"],
+          v;
+        if (object) {
+          ctx.fillStyle = object.toLive ? object.toLive(ctx, this) : object;
 
-      fabric.util.populateWithProperties(this, data, propertiesToInclude);
+          ctx.fillRect(
+            object.offsetX || 0,
+            object.offsetY || 0,
+            this.width,
+            this.height
+          );
+        }
+        object = this[property + "Image"];
+        if (object) {
+          if (this[property + "Vpt"]) {
+            v = this.viewportTransform;
+            ctx.save();
+            ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+          }
+          object.render(ctx);
+          this[property + "Vpt"] && ctx.restore();
+        }
+      },
 
-      return data;
-    },
+      /**
+       * @private
+       * @param {CanvasRenderingContext2D} ctx Context to render on
+       */
+      _renderBackground: function(ctx) {
+        this._renderBackgroundOrOverlay(ctx, "background");
+      },
 
-    /**
-     * @private
-     */
-    _toObjects: function(methodName, propertiesToInclude) {
-      return this._objects.filter(function(object) {
-        return !object.excludeFromExport;
-      }).map(function(instance) {
-        return this._toObject(instance, methodName, propertiesToInclude);
-      }, this);
-    },
+      /**
+       * @private
+       * @param {CanvasRenderingContext2D} ctx Context to render on
+       */
+      _renderOverlay: function(ctx) {
+        this._renderBackgroundOrOverlay(ctx, "overlay");
+      },
 
-    /**
-     * @private
-     */
-    _toObject: function(instance, methodName, propertiesToInclude) {
-      var originalValue;
+      /**
+       * Returns coordinates of a center of canvas.
+       * Returned value is an object with top and left properties
+       * @return {Object} object with "top" and "left" number values
+       */
+      getCenter: function() {
+        return {
+          top: this.height / 2,
+          left: this.width / 2
+        };
+      },
 
-      if (!this.includeDefaultValues) {
-        originalValue = instance.includeDefaultValues;
-        instance.includeDefaultValues = false;
-      }
+      /**
+       * Centers object horizontally in the canvas
+       * @param {fabric.Object} object Object to center horizontally
+       * @return {fabric.Canvas} thisArg
+       */
+      centerObjectH: function(object) {
+        return this._centerObject(
+          object,
+          new fabric.Point(this.getCenter().left, object.getCenterPoint().y)
+        );
+      },
 
-      var object = instance[methodName](propertiesToInclude);
-      if (!this.includeDefaultValues) {
-        instance.includeDefaultValues = originalValue;
-      }
-      return object;
-    },
+      /**
+       * Centers object vertically in the canvas
+       * @param {fabric.Object} object Object to center vertically
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      centerObjectV: function(object) {
+        return this._centerObject(
+          object,
+          new fabric.Point(object.getCenterPoint().x, this.getCenter().top)
+        );
+      },
 
-    /**
-     * @private
-     */
-    __serializeBgOverlay: function(methodName, propertiesToInclude) {
-      var data = { }, bgImage = this.backgroundImage, overlay = this.overlayImage;
+      /**
+       * Centers object vertically and horizontally in the canvas
+       * @param {fabric.Object} object Object to center vertically and horizontally
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      centerObject: function(object) {
+        var center = this.getCenter();
 
-      if (this.backgroundColor) {
-        data.background = this.backgroundColor.toObject
-          ? this.backgroundColor.toObject(propertiesToInclude)
-          : this.backgroundColor;
-      }
+        return this._centerObject(
+          object,
+          new fabric.Point(center.left, center.top)
+        );
+      },
 
-      if (this.overlayColor) {
-        data.overlay = this.overlayColor.toObject
-          ? this.overlayColor.toObject(propertiesToInclude)
-          : this.overlayColor;
-      }
-      if (bgImage && !bgImage.excludeFromExport) {
-        data.backgroundImage = this._toObject(bgImage, methodName, propertiesToInclude);
-      }
-      if (overlay && !overlay.excludeFromExport) {
-        data.overlayImage = this._toObject(overlay, methodName, propertiesToInclude);
-      }
+      /**
+       * Centers object vertically and horizontally in the viewport
+       * @param {fabric.Object} object Object to center vertically and horizontally
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      viewportCenterObject: function(object) {
+        var vpCenter = this.getVpCenter();
 
-      return data;
-    },
+        return this._centerObject(object, vpCenter);
+      },
 
-    /* _TO_SVG_START_ */
-    /**
-     * When true, getSvgTransform() will apply the StaticCanvas.viewportTransform to the SVG transformation. When true,
-     * a zoomed canvas will then produce zoomed SVG output.
-     * @type Boolean
-     * @default
-     */
-    svgViewportTransformation: true,
+      /**
+       * Centers object horizontally in the viewport, object.top is unchanged
+       * @param {fabric.Object} object Object to center vertically and horizontally
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      viewportCenterObjectH: function(object) {
+        var vpCenter = this.getVpCenter();
+        this._centerObject(
+          object,
+          new fabric.Point(vpCenter.x, object.getCenterPoint().y)
+        );
+        return this;
+      },
 
-    /**
-     * Returns SVG representation of canvas
-     * @function
-     * @param {Object} [options] Options object for SVG output
-     * @param {Boolean} [options.suppressPreamble=false] If true xml tag is not included
-     * @param {Object} [options.viewBox] SVG viewbox object
-     * @param {Number} [options.viewBox.x] x-cooridnate of viewbox
-     * @param {Number} [options.viewBox.y] y-coordinate of viewbox
-     * @param {Number} [options.viewBox.width] Width of viewbox
-     * @param {Number} [options.viewBox.height] Height of viewbox
-     * @param {String} [options.encoding=UTF-8] Encoding of SVG output
-     * @param {String} [options.width] desired width of svg with or without units
-     * @param {String} [options.height] desired height of svg with or without units
-     * @param {Function} [reviver] Method for further parsing of svg elements, called after each fabric object converted into svg representation.
-     * @return {String} SVG string
-     * @tutorial {@link http://fabricjs.com/fabric-intro-part-3#serialization}
-     * @see {@link http://jsfiddle.net/fabricjs/jQ3ZZ/|jsFiddle demo}
-     * @example <caption>Normal SVG output</caption>
-     * var svg = canvas.toSVG();
-     * @example <caption>SVG output without preamble (without &lt;?xml ../>)</caption>
-     * var svg = canvas.toSVG({suppressPreamble: true});
-     * @example <caption>SVG output with viewBox attribute</caption>
-     * var svg = canvas.toSVG({
-     *   viewBox: {
-     *     x: 100,
-     *     y: 100,
-     *     width: 200,
-     *     height: 300
-     *   }
-     * });
-     * @example <caption>SVG output with different encoding (default: UTF-8)</caption>
-     * var svg = canvas.toSVG({encoding: 'ISO-8859-1'});
-     * @example <caption>Modify SVG output with reviver function</caption>
-     * var svg = canvas.toSVG(null, function(svg) {
-     *   return svg.replace('stroke-dasharray: ; stroke-linecap: butt; stroke-linejoin: miter; stroke-miterlimit: 10; ', '');
-     * });
-     */
-    toSVG: function(options, reviver) {
-      options || (options = { });
-      options.reviver = reviver;
-      var markup = [];
+      /**
+       * Centers object Vertically in the viewport, object.top is unchanged
+       * @param {fabric.Object} object Object to center vertically and horizontally
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      viewportCenterObjectV: function(object) {
+        var vpCenter = this.getVpCenter();
 
-      this._setSVGPreamble(markup, options);
-      this._setSVGHeader(markup, options);
-      if (this.clipPath) {
-        markup.push('<g clip-path="url(#' + this.clipPath.clipPathId + ')" >\n');
-      }
-      this._setSVGBgOverlayColor(markup, 'backgroundColor');
-      this._setSVGBgOverlayImage(markup, 'backgroundImage', reviver);
-      this._setSVGObjects(markup, reviver);
-      if (this.clipPath) {
-        markup.push('</g>\n');
-      }
-      this._setSVGBgOverlayColor(markup, 'overlayColor');
-      this._setSVGBgOverlayImage(markup, 'overlayImage', reviver);
+        return this._centerObject(
+          object,
+          new fabric.Point(object.getCenterPoint().x, vpCenter.y)
+        );
+      },
 
-      markup.push('</svg>');
+      /**
+       * Calculate the point in canvas that correspond to the center of actual viewport.
+       * @return {fabric.Point} vpCenter, viewport center
+       * @chainable
+       */
+      getVpCenter: function() {
+        var center = this.getCenter(),
+          iVpt = invertTransform(this.viewportTransform);
+        return transformPoint({ x: center.left, y: center.top }, iVpt);
+      },
 
-      return markup.join('');
-    },
+      /**
+       * @private
+       * @param {fabric.Object} object Object to center
+       * @param {fabric.Point} center Center point
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      _centerObject: function(object, center) {
+        object.setPositionByOrigin(center, "center", "center");
+        object.setCoords();
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
 
-    /**
-     * @private
-     */
-    _setSVGPreamble: function(markup, options) {
-      if (options.suppressPreamble) {
-        return;
-      }
-      markup.push(
-        '<?xml version="1.0" encoding="', (options.encoding || 'UTF-8'), '" standalone="no" ?>\n',
-        '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ',
-        '"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
-      );
-    },
+      /**
+       * Returs dataless JSON representation of canvas
+       * @param {Array} [propertiesToInclude] Any properties that you might want to additionally include in the output
+       * @return {String} json string
+       */
+      toDatalessJSON: function(propertiesToInclude) {
+        return this.toDatalessObject(propertiesToInclude);
+      },
 
-    /**
-     * @private
-     */
-    _setSVGHeader: function(markup, options) {
-      var width = options.width || this.width,
+      /**
+       * Returns object representation of canvas
+       * @param {Array} [propertiesToInclude] Any properties that you might want to additionally include in the output
+       * @return {Object} object representation of an instance
+       */
+      toObject: function(propertiesToInclude) {
+        return this._toObjectMethod("toObject", propertiesToInclude);
+      },
+
+      /**
+       * Returns dataless object representation of canvas
+       * @param {Array} [propertiesToInclude] Any properties that you might want to additionally include in the output
+       * @return {Object} object representation of an instance
+       */
+      toDatalessObject: function(propertiesToInclude) {
+        return this._toObjectMethod("toDatalessObject", propertiesToInclude);
+      },
+
+      /**
+       * @private
+       */
+      _toObjectMethod: function(methodName, propertiesToInclude) {
+        var clipPath = this.clipPath,
+          data = {
+            version: fabric.version,
+            objects: this._toObjects(methodName, propertiesToInclude)
+          };
+        if (clipPath) {
+          data.clipPath = this._toObject(
+            this.clipPath,
+            methodName,
+            propertiesToInclude
+          );
+        }
+        extend(
+          data,
+          this.__serializeBgOverlay(methodName, propertiesToInclude)
+        );
+
+        fabric.util.populateWithProperties(this, data, propertiesToInclude);
+
+        return data;
+      },
+
+      /**
+       * @private
+       */
+      _toObjects: function(methodName, propertiesToInclude) {
+        return this._objects
+          .filter(function(object) {
+            return !object.excludeFromExport;
+          })
+          .map(function(instance) {
+            return this._toObject(instance, methodName, propertiesToInclude);
+          }, this);
+      },
+
+      /**
+       * @private
+       */
+      _toObject: function(instance, methodName, propertiesToInclude) {
+        var originalValue;
+
+        if (!this.includeDefaultValues) {
+          originalValue = instance.includeDefaultValues;
+          instance.includeDefaultValues = false;
+        }
+
+        var object = instance[methodName](propertiesToInclude);
+        if (!this.includeDefaultValues) {
+          instance.includeDefaultValues = originalValue;
+        }
+        return object;
+      },
+
+      /**
+       * @private
+       */
+      __serializeBgOverlay: function(methodName, propertiesToInclude) {
+        var data = {},
+          bgImage = this.backgroundImage,
+          overlay = this.overlayImage;
+
+        if (this.backgroundColor) {
+          data.background = this.backgroundColor.toObject
+            ? this.backgroundColor.toObject(propertiesToInclude)
+            : this.backgroundColor;
+        }
+
+        if (this.overlayColor) {
+          data.overlay = this.overlayColor.toObject
+            ? this.overlayColor.toObject(propertiesToInclude)
+            : this.overlayColor;
+        }
+        if (bgImage && !bgImage.excludeFromExport) {
+          data.backgroundImage = this._toObject(
+            bgImage,
+            methodName,
+            propertiesToInclude
+          );
+        }
+        if (overlay && !overlay.excludeFromExport) {
+          data.overlayImage = this._toObject(
+            overlay,
+            methodName,
+            propertiesToInclude
+          );
+        }
+
+        return data;
+      },
+
+      /* _TO_SVG_START_ */
+      /**
+       * When true, getSvgTransform() will apply the StaticCanvas.viewportTransform to the SVG transformation. When true,
+       * a zoomed canvas will then produce zoomed SVG output.
+       * @type Boolean
+       * @default
+       */
+      svgViewportTransformation: true,
+
+      /**
+       * Returns SVG representation of canvas
+       * @function
+       * @param {Object} [options] Options object for SVG output
+       * @param {Boolean} [options.suppressPreamble=false] If true xml tag is not included
+       * @param {Object} [options.viewBox] SVG viewbox object
+       * @param {Number} [options.viewBox.x] x-cooridnate of viewbox
+       * @param {Number} [options.viewBox.y] y-coordinate of viewbox
+       * @param {Number} [options.viewBox.width] Width of viewbox
+       * @param {Number} [options.viewBox.height] Height of viewbox
+       * @param {String} [options.encoding=UTF-8] Encoding of SVG output
+       * @param {String} [options.width] desired width of svg with or without units
+       * @param {String} [options.height] desired height of svg with or without units
+       * @param {Function} [reviver] Method for further parsing of svg elements, called after each fabric object converted into svg representation.
+       * @return {String} SVG string
+       * @tutorial {@link http://fabricjs.com/fabric-intro-part-3#serialization}
+       * @see {@link http://jsfiddle.net/fabricjs/jQ3ZZ/|jsFiddle demo}
+       * @example <caption>Normal SVG output</caption>
+       * var svg = canvas.toSVG();
+       * @example <caption>SVG output without preamble (without &lt;?xml ../>)</caption>
+       * var svg = canvas.toSVG({suppressPreamble: true});
+       * @example <caption>SVG output with viewBox attribute</caption>
+       * var svg = canvas.toSVG({
+       *   viewBox: {
+       *     x: 100,
+       *     y: 100,
+       *     width: 200,
+       *     height: 300
+       *   }
+       * });
+       * @example <caption>SVG output with different encoding (default: UTF-8)</caption>
+       * var svg = canvas.toSVG({encoding: 'ISO-8859-1'});
+       * @example <caption>Modify SVG output with reviver function</caption>
+       * var svg = canvas.toSVG(null, function(svg) {
+       *   return svg.replace('stroke-dasharray: ; stroke-linecap: butt; stroke-linejoin: miter; stroke-miterlimit: 10; ', '');
+       * });
+       */
+      toSVG: function(options, reviver) {
+        options || (options = {});
+        options.reviver = reviver;
+        var markup = [];
+
+        this._setSVGPreamble(markup, options);
+        this._setSVGHeader(markup, options);
+        if (this.clipPath) {
+          markup.push(
+            '<g clip-path="url(#' + this.clipPath.clipPathId + ')" >\n'
+          );
+        }
+        this._setSVGBgOverlayColor(markup, "backgroundColor");
+        this._setSVGBgOverlayImage(markup, "backgroundImage", reviver);
+        this._setSVGObjects(markup, reviver);
+        if (this.clipPath) {
+          markup.push("</g>\n");
+        }
+        this._setSVGBgOverlayColor(markup, "overlayColor");
+        this._setSVGBgOverlayImage(markup, "overlayImage", reviver);
+
+        markup.push("</svg>");
+
+        return markup.join("");
+      },
+
+      /**
+       * @private
+       */
+      _setSVGPreamble: function(markup, options) {
+        if (options.suppressPreamble) {
+          return;
+        }
+        markup.push(
+          '<?xml version="1.0" encoding="',
+          options.encoding || "UTF-8",
+          '" standalone="no" ?>\n',
+          '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ',
+          '"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
+        );
+      },
+
+      /**
+       * @private
+       */
+      _setSVGHeader: function(markup, options) {
+        var width = options.width || this.width,
           height = options.height || this.height,
-          vpt, viewBox = 'viewBox="0 0 ' + this.width + ' ' + this.height + '" ',
+          vpt,
+          viewBox = 'viewBox="0 0 ' + this.width + " " + this.height + '" ',
           NUM_FRACTION_DIGITS = fabric.Object.NUM_FRACTION_DIGITS;
 
-      if (options.viewBox) {
-        viewBox = 'viewBox="' +
-                options.viewBox.x + ' ' +
-                options.viewBox.y + ' ' +
-                options.viewBox.width + ' ' +
-                options.viewBox.height + '" ';
-      }
-      else {
-        if (this.svgViewportTransformation) {
-          vpt = this.viewportTransform;
-          viewBox = 'viewBox="' +
-                  toFixed(-vpt[4] / vpt[0], NUM_FRACTION_DIGITS) + ' ' +
-                  toFixed(-vpt[5] / vpt[3], NUM_FRACTION_DIGITS) + ' ' +
-                  toFixed(this.width / vpt[0], NUM_FRACTION_DIGITS) + ' ' +
-                  toFixed(this.height / vpt[3], NUM_FRACTION_DIGITS) + '" ';
+        if (options.viewBox) {
+          viewBox =
+            'viewBox="' +
+            options.viewBox.x +
+            " " +
+            options.viewBox.y +
+            " " +
+            options.viewBox.width +
+            " " +
+            options.viewBox.height +
+            '" ';
+        } else {
+          if (this.svgViewportTransformation) {
+            vpt = this.viewportTransform;
+            viewBox =
+              'viewBox="' +
+              toFixed(-vpt[4] / vpt[0], NUM_FRACTION_DIGITS) +
+              " " +
+              toFixed(-vpt[5] / vpt[3], NUM_FRACTION_DIGITS) +
+              " " +
+              toFixed(this.width / vpt[0], NUM_FRACTION_DIGITS) +
+              " " +
+              toFixed(this.height / vpt[3], NUM_FRACTION_DIGITS) +
+              '" ';
+          }
         }
-      }
 
-      markup.push(
-        '<svg ',
-        'xmlns="http://www.w3.org/2000/svg" ',
-        'xmlns:xlink="http://www.w3.org/1999/xlink" ',
-        'version="1.1" ',
-        'width="', width, '" ',
-        'height="', height, '" ',
-        viewBox,
-        'xml:space="preserve">\n',
-        '<desc>Created with Fabric.js ', fabric.version, '</desc>\n',
-        '<defs>\n',
-        this.createSVGFontFacesMarkup(),
-        this.createSVGRefElementsMarkup(),
-        this.createSVGClipPathMarkup(options),
-        '</defs>\n'
-      );
-    },
+        markup.push(
+          "<svg ",
+          'xmlns="http://www.w3.org/2000/svg" ',
+          'xmlns:xlink="http://www.w3.org/1999/xlink" ',
+          'version="1.1" ',
+          'width="',
+          width,
+          '" ',
+          'height="',
+          height,
+          '" ',
+          viewBox,
+          'xml:space="preserve">\n',
+          "<desc>Created with Fabric.js ",
+          fabric.version,
+          "</desc>\n",
+          "<defs>\n",
+          this.createSVGFontFacesMarkup(),
+          this.createSVGRefElementsMarkup(),
+          this.createSVGClipPathMarkup(options),
+          "</defs>\n"
+        );
+      },
 
-    createSVGClipPathMarkup: function(options) {
-      var clipPath = this.clipPath;
-      if (clipPath) {
-        clipPath.clipPathId = 'CLIPPATH_' + fabric.Object.__uid++;
-        return  '<clipPath id="' + clipPath.clipPathId + '" >\n' +
-          this.clipPath.toClipPathSVG(options.reviver) +
-          '</clipPath>\n';
-      }
-      return '';
-    },
+      createSVGClipPathMarkup: function(options) {
+        var clipPath = this.clipPath;
+        if (clipPath) {
+          clipPath.clipPathId = "CLIPPATH_" + fabric.Object.__uid++;
+          return (
+            '<clipPath id="' +
+            clipPath.clipPathId +
+            '" >\n' +
+            this.clipPath.toClipPathSVG(options.reviver) +
+            "</clipPath>\n"
+          );
+        }
+        return "";
+      },
 
-    /**
-     * Creates markup containing SVG referenced elements like patterns, gradients etc.
-     * @return {String}
-     */
-    createSVGRefElementsMarkup: function() {
-      var _this = this,
-          markup = ['backgroundColor', 'overlayColor'].map(function(prop) {
+      /**
+       * Creates markup containing SVG referenced elements like patterns, gradients etc.
+       * @return {String}
+       */
+      createSVGRefElementsMarkup: function() {
+        var _this = this,
+          markup = ["backgroundColor", "overlayColor"].map(function(prop) {
             var fill = _this[prop];
             if (fill && fill.toLive) {
               return fill.toSVG(_this, false);
             }
           });
-      return markup.join('');
-    },
+        return markup.join("");
+      },
 
-    /**
-     * Creates markup containing SVG font faces,
-     * font URLs for font faces must be collected by developers
-     * and are not extracted from the DOM by fabricjs
-     * @param {Array} objects Array of fabric objects
-     * @return {String}
-     */
-    createSVGFontFacesMarkup: function() {
-      var markup = '', fontList = { }, obj, fontFamily,
-          style, row, rowIndex, _char, charIndex, i, len,
-          fontPaths = fabric.fontPaths, objects = this._objects;
+      /**
+       * Creates markup containing SVG font faces,
+       * font URLs for font faces must be collected by developers
+       * and are not extracted from the DOM by fabricjs
+       * @param {Array} objects Array of fabric objects
+       * @return {String}
+       */
+      createSVGFontFacesMarkup: function() {
+        var markup = "",
+          fontList = {},
+          obj,
+          fontFamily,
+          style,
+          row,
+          rowIndex,
+          _char,
+          charIndex,
+          i,
+          len,
+          fontPaths = fabric.fontPaths,
+          objects = this._objects;
 
-      for (i = 0, len = objects.length; i < len; i++) {
-        obj = objects[i];
-        fontFamily = obj.fontFamily;
-        if (obj.type.indexOf('text') === -1 || fontList[fontFamily] || !fontPaths[fontFamily]) {
-          continue;
-        }
-        fontList[fontFamily] = true;
-        if (!obj.styles) {
-          continue;
-        }
-        style = obj.styles;
-        for (rowIndex in style) {
-          row = style[rowIndex];
-          for (charIndex in row) {
-            _char = row[charIndex];
-            fontFamily = _char.fontFamily;
-            if (!fontList[fontFamily] && fontPaths[fontFamily]) {
-              fontList[fontFamily] = true;
+        for (i = 0, len = objects.length; i < len; i++) {
+          obj = objects[i];
+          fontFamily = obj.fontFamily;
+          if (
+            obj.type.indexOf("text") === -1 ||
+            fontList[fontFamily] ||
+            !fontPaths[fontFamily]
+          ) {
+            continue;
+          }
+          fontList[fontFamily] = true;
+          if (!obj.styles) {
+            continue;
+          }
+          style = obj.styles;
+          for (rowIndex in style) {
+            row = style[rowIndex];
+            for (charIndex in row) {
+              _char = row[charIndex];
+              fontFamily = _char.fontFamily;
+              if (!fontList[fontFamily] && fontPaths[fontFamily]) {
+                fontList[fontFamily] = true;
+              }
             }
           }
         }
-      }
 
-      for (var j in fontList) {
-        markup += [
-          '\t\t@font-face {\n',
-          '\t\t\tfont-family: \'', j, '\';\n',
-          '\t\t\tsrc: url(\'', fontPaths[j], '\');\n',
-          '\t\t}\n'
-        ].join('');
-      }
-
-      if (markup) {
-        markup = [
-          '\t<style type="text/css">',
-          '<![CDATA[\n',
-          markup,
-          ']]>',
-          '</style>\n'
-        ].join('');
-      }
-
-      return markup;
-    },
-
-    /**
-     * @private
-     */
-    _setSVGObjects: function(markup, reviver) {
-      var instance, i, len, objects = this._objects;
-      for (i = 0, len = objects.length; i < len; i++) {
-        instance = objects[i];
-        if (instance.excludeFromExport) {
-          continue;
+        for (var j in fontList) {
+          markup += [
+            "\t\t@font-face {\n",
+            "\t\t\tfont-family: '",
+            j,
+            "';\n",
+            "\t\t\tsrc: url('",
+            fontPaths[j],
+            "');\n",
+            "\t\t}\n"
+          ].join("");
         }
-        this._setSVGObject(markup, instance, reviver);
-      }
-    },
 
-    /**
-     * @private
-     */
-    _setSVGObject: function(markup, instance, reviver) {
-      markup.push(instance.toSVG(reviver));
-    },
+        if (markup) {
+          markup = [
+            '\t<style type="text/css">',
+            "<![CDATA[\n",
+            markup,
+            "]]>",
+            "</style>\n"
+          ].join("");
+        }
 
-    /**
-     * @private
-     */
-    _setSVGBgOverlayImage: function(markup, property, reviver) {
-      if (this[property] && !this[property].excludeFromExport && this[property].toSVG) {
-        markup.push(this[property].toSVG(reviver));
-      }
-    },
+        return markup;
+      },
 
-    /**
-     * @private
-     */
-    _setSVGBgOverlayColor: function(markup, property) {
-      var filler = this[property], vpt = this.viewportTransform, finalWidth = this.width / vpt[0],
+      /**
+       * @private
+       */
+      _setSVGObjects: function(markup, reviver) {
+        var instance,
+          i,
+          len,
+          objects = this._objects;
+        for (i = 0, len = objects.length; i < len; i++) {
+          instance = objects[i];
+          if (instance.excludeFromExport) {
+            continue;
+          }
+          this._setSVGObject(markup, instance, reviver);
+        }
+      },
+
+      /**
+       * @private
+       */
+      _setSVGObject: function(markup, instance, reviver) {
+        markup.push(instance.toSVG(reviver));
+      },
+
+      /**
+       * @private
+       */
+      _setSVGBgOverlayImage: function(markup, property, reviver) {
+        if (
+          this[property] &&
+          !this[property].excludeFromExport &&
+          this[property].toSVG
+        ) {
+          markup.push(this[property].toSVG(reviver));
+        }
+      },
+
+      /**
+       * @private
+       */
+      _setSVGBgOverlayColor: function(markup, property) {
+        var filler = this[property],
+          vpt = this.viewportTransform,
+          finalWidth = this.width / vpt[0],
           finalHeight = this.height / vpt[3];
-      if (!filler) {
-        return;
-      }
-      if (filler.toLive) {
-        var repeat = filler.repeat;
-        markup.push(
-          '<rect transform="translate(', finalWidth / 2, ',', finalHeight / 2, ')"',
-          ' x="', filler.offsetX - finalWidth / 2, '" y="', filler.offsetY - finalHeight / 2, '" ',
-          'width="',
-          (repeat === 'repeat-y' || repeat === 'no-repeat'
-            ? filler.source.width
-            : finalWidth ),
-          '" height="',
-          (repeat === 'repeat-x' || repeat === 'no-repeat'
-            ? filler.source.height
-            : finalHeight),
-          '" fill="url(#SVGID_' + filler.id + ')"',
-          '></rect>\n'
+        if (!filler) {
+          return;
+        }
+        if (filler.toLive) {
+          var repeat = filler.repeat;
+          markup.push(
+            '<rect transform="translate(',
+            finalWidth / 2,
+            ",",
+            finalHeight / 2,
+            ')"',
+            ' x="',
+            filler.offsetX - finalWidth / 2,
+            '" y="',
+            filler.offsetY - finalHeight / 2,
+            '" ',
+            'width="',
+            repeat === "repeat-y" || repeat === "no-repeat"
+              ? filler.source.width
+              : finalWidth,
+            '" height="',
+            repeat === "repeat-x" || repeat === "no-repeat"
+              ? filler.source.height
+              : finalHeight,
+            '" fill="url(#SVGID_' + filler.id + ')"',
+            "></rect>\n"
+          );
+        } else {
+          markup.push(
+            '<rect x="0" y="0" width="100%" height="100%" ',
+            'fill="',
+            this[property],
+            '"',
+            "></rect>\n"
+          );
+        }
+      },
+      /* _TO_SVG_END_ */
+
+      /**
+       * Moves an object or the objects of a multiple selection
+       * to the bottom of the stack of drawn objects
+       * @param {fabric.Object} object Object to send to back
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      sendToBack: function(object) {
+        if (!object) {
+          return this;
+        }
+        var activeSelection = this._activeObject,
+          i,
+          obj,
+          objs;
+        if (object === activeSelection && object.type === "activeSelection") {
+          objs = activeSelection._objects;
+          for (i = objs.length; i--; ) {
+            obj = objs[i];
+            removeFromArray(this._objects, obj);
+            this._objects.unshift(obj);
+          }
+        } else {
+          removeFromArray(this._objects, object);
+          this._objects.unshift(object);
+        }
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
+
+      /**
+       * Moves an object or the objects of a multiple selection
+       * to the top of the stack of drawn objects
+       * @param {fabric.Object} object Object to send
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      bringToFront: function(object) {
+        if (!object) {
+          return this;
+        }
+        var activeSelection = this._activeObject,
+          i,
+          obj,
+          objs;
+        if (object === activeSelection && object.type === "activeSelection") {
+          objs = activeSelection._objects;
+          for (i = 0; i < objs.length; i++) {
+            obj = objs[i];
+            removeFromArray(this._objects, obj);
+            this._objects.push(obj);
+          }
+        } else {
+          removeFromArray(this._objects, object);
+          this._objects.push(object);
+        }
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
+
+      /**
+       * Moves an object or a selection down in stack of drawn objects
+       * An optional paramter, intersecting allowes to move the object in behind
+       * the first intersecting object. Where intersection is calculated with
+       * bounding box. If no intersection is found, there will not be change in the
+       * stack.
+       * @param {fabric.Object} object Object to send
+       * @param {Boolean} [intersecting] If `true`, send object behind next lower intersecting object
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      sendBackwards: function(object, intersecting) {
+        if (!object) {
+          return this;
+        }
+        var activeSelection = this._activeObject,
+          i,
+          obj,
+          idx,
+          newIdx,
+          objs,
+          objsMoved = 0;
+
+        if (object === activeSelection && object.type === "activeSelection") {
+          objs = activeSelection._objects;
+          for (i = 0; i < objs.length; i++) {
+            obj = objs[i];
+            idx = this._objects.indexOf(obj);
+            if (idx > 0 + objsMoved) {
+              newIdx = idx - 1;
+              removeFromArray(this._objects, obj);
+              this._objects.splice(newIdx, 0, obj);
+            }
+            objsMoved++;
+          }
+        } else {
+          idx = this._objects.indexOf(object);
+          if (idx !== 0) {
+            // if object is not on the bottom of stack
+            newIdx = this._findNewLowerIndex(object, idx, intersecting);
+            removeFromArray(this._objects, object);
+            this._objects.splice(newIdx, 0, object);
+          }
+        }
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
+
+      /**
+       * @private
+       */
+      _findNewLowerIndex: function(object, idx, intersecting) {
+        var newIdx, i;
+
+        if (intersecting) {
+          newIdx = idx;
+
+          // traverse down the stack looking for the nearest intersecting object
+          for (i = idx - 1; i >= 0; --i) {
+            var isIntersecting =
+              object.intersectsWithObject(this._objects[i]) ||
+              object.isContainedWithinObject(this._objects[i]) ||
+              this._objects[i].isContainedWithinObject(object);
+
+            if (isIntersecting) {
+              newIdx = i;
+              break;
+            }
+          }
+        } else {
+          newIdx = idx - 1;
+        }
+
+        return newIdx;
+      },
+
+      /**
+       * Moves an object or a selection up in stack of drawn objects
+       * An optional paramter, intersecting allowes to move the object in front
+       * of the first intersecting object. Where intersection is calculated with
+       * bounding box. If no intersection is found, there will not be change in the
+       * stack.
+       * @param {fabric.Object} object Object to send
+       * @param {Boolean} [intersecting] If `true`, send object in front of next upper intersecting object
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      bringForward: function(object, intersecting) {
+        if (!object) {
+          return this;
+        }
+        var activeSelection = this._activeObject,
+          i,
+          obj,
+          idx,
+          newIdx,
+          objs,
+          objsMoved = 0;
+
+        if (object === activeSelection && object.type === "activeSelection") {
+          objs = activeSelection._objects;
+          for (i = objs.length; i--; ) {
+            obj = objs[i];
+            idx = this._objects.indexOf(obj);
+            if (idx < this._objects.length - 1 - objsMoved) {
+              newIdx = idx + 1;
+              removeFromArray(this._objects, obj);
+              this._objects.splice(newIdx, 0, obj);
+            }
+            objsMoved++;
+          }
+        } else {
+          idx = this._objects.indexOf(object);
+          if (idx !== this._objects.length - 1) {
+            // if object is not on top of stack (last item in an array)
+            newIdx = this._findNewUpperIndex(object, idx, intersecting);
+            removeFromArray(this._objects, object);
+            this._objects.splice(newIdx, 0, object);
+          }
+        }
+        this.renderOnAddRemove && this.requestRenderAll();
+        return this;
+      },
+
+      /**
+       * @private
+       */
+      _findNewUpperIndex: function(object, idx, intersecting) {
+        var newIdx, i, len;
+
+        if (intersecting) {
+          newIdx = idx;
+
+          // traverse up the stack looking for the nearest intersecting object
+          for (i = idx + 1, len = this._objects.length; i < len; ++i) {
+            var isIntersecting =
+              object.intersectsWithObject(this._objects[i]) ||
+              object.isContainedWithinObject(this._objects[i]) ||
+              this._objects[i].isContainedWithinObject(object);
+
+            if (isIntersecting) {
+              newIdx = i;
+              break;
+            }
+          }
+        } else {
+          newIdx = idx + 1;
+        }
+
+        return newIdx;
+      },
+
+      /**
+       * Moves an object to specified level in stack of drawn objects
+       * @param {fabric.Object} object Object to send
+       * @param {Number} index Position to move to
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      moveTo: function(object, index) {
+        removeFromArray(this._objects, object);
+        this._objects.splice(index, 0, object);
+        return this.renderOnAddRemove && this.requestRenderAll();
+      },
+
+      /**
+       * Clears a canvas element and dispose objects
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      dispose: function() {
+        // cancel eventually ongoing renders
+        if (this.isRendering) {
+          fabric.util.cancelAnimFrame(this.isRendering);
+          this.isRendering = 0;
+        }
+        this.forEachObject(function(object) {
+          object.dispose && object.dispose();
+        });
+        this._objects = [];
+        if (this.backgroundImage && this.backgroundImage.dispose) {
+          this.backgroundImage.dispose();
+        }
+        this.backgroundImage = null;
+        if (this.overlayImage && this.overlayImage.dispose) {
+          this.overlayImage.dispose();
+        }
+        this.overlayImage = null;
+        this._iTextInstances = null;
+        this.contextContainer = null;
+        fabric.util.cleanUpJsdomNode(this.lowerCanvasEl);
+        this.lowerCanvasEl = undefined;
+        return this;
+      },
+
+      /**
+       * Returns a string representation of an instance
+       * @return {String} string representation of an instance
+       */
+      toString: function() {
+        return (
+          "#<fabric.Canvas (" +
+          this.complexity() +
+          "): " +
+          "{ objects: " +
+          this._objects.length +
+          " }>"
         );
       }
-      else {
-        markup.push(
-          '<rect x="0" y="0" width="100%" height="100%" ',
-          'fill="', this[property], '"',
-          '></rect>\n'
-        );
-      }
-    },
-    /* _TO_SVG_END_ */
-
-    /**
-     * Moves an object or the objects of a multiple selection
-     * to the bottom of the stack of drawn objects
-     * @param {fabric.Object} object Object to send to back
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    sendToBack: function (object) {
-      if (!object) {
-        return this;
-      }
-      var activeSelection = this._activeObject,
-          i, obj, objs;
-      if (object === activeSelection && object.type === 'activeSelection') {
-        objs = activeSelection._objects;
-        for (i = objs.length; i--;) {
-          obj = objs[i];
-          removeFromArray(this._objects, obj);
-          this._objects.unshift(obj);
-        }
-      }
-      else {
-        removeFromArray(this._objects, object);
-        this._objects.unshift(object);
-      }
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
-
-    /**
-     * Moves an object or the objects of a multiple selection
-     * to the top of the stack of drawn objects
-     * @param {fabric.Object} object Object to send
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    bringToFront: function (object) {
-      if (!object) {
-        return this;
-      }
-      var activeSelection = this._activeObject,
-          i, obj, objs;
-      if (object === activeSelection && object.type === 'activeSelection') {
-        objs = activeSelection._objects;
-        for (i = 0; i < objs.length; i++) {
-          obj = objs[i];
-          removeFromArray(this._objects, obj);
-          this._objects.push(obj);
-        }
-      }
-      else {
-        removeFromArray(this._objects, object);
-        this._objects.push(object);
-      }
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
-
-    /**
-     * Moves an object or a selection down in stack of drawn objects
-     * An optional paramter, intersecting allowes to move the object in behind
-     * the first intersecting object. Where intersection is calculated with
-     * bounding box. If no intersection is found, there will not be change in the
-     * stack.
-     * @param {fabric.Object} object Object to send
-     * @param {Boolean} [intersecting] If `true`, send object behind next lower intersecting object
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    sendBackwards: function (object, intersecting) {
-      if (!object) {
-        return this;
-      }
-      var activeSelection = this._activeObject,
-          i, obj, idx, newIdx, objs, objsMoved = 0;
-
-      if (object === activeSelection && object.type === 'activeSelection') {
-        objs = activeSelection._objects;
-        for (i = 0; i < objs.length; i++) {
-          obj = objs[i];
-          idx = this._objects.indexOf(obj);
-          if (idx > 0 + objsMoved) {
-            newIdx = idx - 1;
-            removeFromArray(this._objects, obj);
-            this._objects.splice(newIdx, 0, obj);
-          }
-          objsMoved++;
-        }
-      }
-      else {
-        idx = this._objects.indexOf(object);
-        if (idx !== 0) {
-          // if object is not on the bottom of stack
-          newIdx = this._findNewLowerIndex(object, idx, intersecting);
-          removeFromArray(this._objects, object);
-          this._objects.splice(newIdx, 0, object);
-        }
-      }
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
-
-    /**
-     * @private
-     */
-    _findNewLowerIndex: function(object, idx, intersecting) {
-      var newIdx, i;
-
-      if (intersecting) {
-        newIdx = idx;
-
-        // traverse down the stack looking for the nearest intersecting object
-        for (i = idx - 1; i >= 0; --i) {
-
-          var isIntersecting = object.intersectsWithObject(this._objects[i]) ||
-                               object.isContainedWithinObject(this._objects[i]) ||
-                               this._objects[i].isContainedWithinObject(object);
-
-          if (isIntersecting) {
-            newIdx = i;
-            break;
-          }
-        }
-      }
-      else {
-        newIdx = idx - 1;
-      }
-
-      return newIdx;
-    },
-
-    /**
-     * Moves an object or a selection up in stack of drawn objects
-     * An optional paramter, intersecting allowes to move the object in front
-     * of the first intersecting object. Where intersection is calculated with
-     * bounding box. If no intersection is found, there will not be change in the
-     * stack.
-     * @param {fabric.Object} object Object to send
-     * @param {Boolean} [intersecting] If `true`, send object in front of next upper intersecting object
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    bringForward: function (object, intersecting) {
-      if (!object) {
-        return this;
-      }
-      var activeSelection = this._activeObject,
-          i, obj, idx, newIdx, objs, objsMoved = 0;
-
-      if (object === activeSelection && object.type === 'activeSelection') {
-        objs = activeSelection._objects;
-        for (i = objs.length; i--;) {
-          obj = objs[i];
-          idx = this._objects.indexOf(obj);
-          if (idx < this._objects.length - 1 - objsMoved) {
-            newIdx = idx + 1;
-            removeFromArray(this._objects, obj);
-            this._objects.splice(newIdx, 0, obj);
-          }
-          objsMoved++;
-        }
-      }
-      else {
-        idx = this._objects.indexOf(object);
-        if (idx !== this._objects.length - 1) {
-          // if object is not on top of stack (last item in an array)
-          newIdx = this._findNewUpperIndex(object, idx, intersecting);
-          removeFromArray(this._objects, object);
-          this._objects.splice(newIdx, 0, object);
-        }
-      }
-      this.renderOnAddRemove && this.requestRenderAll();
-      return this;
-    },
-
-    /**
-     * @private
-     */
-    _findNewUpperIndex: function(object, idx, intersecting) {
-      var newIdx, i, len;
-
-      if (intersecting) {
-        newIdx = idx;
-
-        // traverse up the stack looking for the nearest intersecting object
-        for (i = idx + 1, len = this._objects.length; i < len; ++i) {
-
-          var isIntersecting = object.intersectsWithObject(this._objects[i]) ||
-                               object.isContainedWithinObject(this._objects[i]) ||
-                               this._objects[i].isContainedWithinObject(object);
-
-          if (isIntersecting) {
-            newIdx = i;
-            break;
-          }
-        }
-      }
-      else {
-        newIdx = idx + 1;
-      }
-
-      return newIdx;
-    },
-
-    /**
-     * Moves an object to specified level in stack of drawn objects
-     * @param {fabric.Object} object Object to send
-     * @param {Number} index Position to move to
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    moveTo: function (object, index) {
-      removeFromArray(this._objects, object);
-      this._objects.splice(index, 0, object);
-      return this.renderOnAddRemove && this.requestRenderAll();
-    },
-
-    /**
-     * Clears a canvas element and dispose objects
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    dispose: function () {
-      // cancel eventually ongoing renders
-      if (this.isRendering) {
-        fabric.util.cancelAnimFrame(this.isRendering);
-        this.isRendering = 0;
-      }
-      this.forEachObject(function(object) {
-        object.dispose && object.dispose();
-      });
-      this._objects = [];
-      if (this.backgroundImage && this.backgroundImage.dispose) {
-        this.backgroundImage.dispose();
-      }
-      this.backgroundImage = null;
-      if (this.overlayImage && this.overlayImage.dispose) {
-        this.overlayImage.dispose();
-      }
-      this.overlayImage = null;
-      this._iTextInstances = null;
-      this.contextContainer = null;
-      fabric.util.cleanUpJsdomNode(this.lowerCanvasEl);
-      this.lowerCanvasEl = undefined;
-      return this;
-    },
-
-    /**
-     * Returns a string representation of an instance
-     * @return {String} string representation of an instance
-     */
-    toString: function () {
-      return '#<fabric.Canvas (' + this.complexity() + '): ' +
-               '{ objects: ' + this._objects.length + ' }>';
     }
-  });
+  );
 
   extend(fabric.StaticCanvas.prototype, fabric.Observable);
   extend(fabric.StaticCanvas.prototype, fabric.Collection);
   extend(fabric.StaticCanvas.prototype, fabric.DataURLExporter);
 
-  extend(fabric.StaticCanvas, /** @lends fabric.StaticCanvas */ {
+  extend(
+    fabric.StaticCanvas,
+    /** @lends fabric.StaticCanvas */ {
+      /**
+       * @static
+       * @type String
+       * @default
+       */
+      EMPTY_JSON: '{"objects": [], "background": "white"}',
 
-    /**
-     * @static
-     * @type String
-     * @default
-     */
-    EMPTY_JSON: '{"objects": [], "background": "white"}',
+      /**
+       * Provides a way to check support of some of the canvas methods
+       * (either those of HTMLCanvasElement itself, or rendering context)
+       *
+       * @param {String} methodName Method to check support for;
+       *                            Could be one of "setLineDash"
+       * @return {Boolean | null} `true` if method is supported (or at least exists),
+       *                          `null` if canvas element or context can not be initialized
+       */
+      supports: function(methodName) {
+        var el = createCanvasElement();
 
-    /**
-     * Provides a way to check support of some of the canvas methods
-     * (either those of HTMLCanvasElement itself, or rendering context)
-     *
-     * @param {String} methodName Method to check support for;
-     *                            Could be one of "setLineDash"
-     * @return {Boolean | null} `true` if method is supported (or at least exists),
-     *                          `null` if canvas element or context can not be initialized
-     */
-    supports: function (methodName) {
-      var el = createCanvasElement();
-
-      if (!el || !el.getContext) {
-        return null;
-      }
-
-      var ctx = el.getContext('2d');
-      if (!ctx) {
-        return null;
-      }
-
-      switch (methodName) {
-
-        case 'setLineDash':
-          return typeof ctx.setLineDash !== 'undefined';
-
-        default:
+        if (!el || !el.getContext) {
           return null;
+        }
+
+        var ctx = el.getContext("2d");
+        if (!ctx) {
+          return null;
+        }
+
+        switch (methodName) {
+          case "setLineDash":
+            return typeof ctx.setLineDash !== "undefined";
+
+          default:
+            return null;
+        }
       }
     }
-  });
+  );
 
   /**
    * Returns JSON representation of canvas
@@ -9208,15 +9402,13 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
 
 (function() {
-
   var getPointer = fabric.util.getPointer,
-      degreesToRadians = fabric.util.degreesToRadians,
-      radiansToDegrees = fabric.util.radiansToDegrees,
-      atan2 = Math.atan2,
-      abs = Math.abs,
-      supportLineDash = fabric.StaticCanvas.supports('setLineDash'),
-
-      STROKE_OFFSET = 0.5;
+    degreesToRadians = fabric.util.degreesToRadians,
+    radiansToDegrees = fabric.util.radiansToDegrees,
+    atan2 = Math.atan2,
+    abs = Math.abs,
+    supportLineDash = fabric.StaticCanvas.supports("setLineDash"),
+    STROKE_OFFSET = 0.5;
 
   /**
    * Canvas class
@@ -9259,2093 +9451,2402 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
    * @fires drop
    *
    */
-  fabric.Canvas = fabric.util.createClass(fabric.StaticCanvas, /** @lends fabric.Canvas.prototype */ {
+  fabric.Canvas = fabric.util.createClass(
+    fabric.StaticCanvas,
+    /** @lends fabric.Canvas.prototype */ {
+      /**
+       * Constructor
+       * @param {HTMLElement | String} el &lt;canvas> element to initialize instance on
+       * @param {Object} [options] Options object
+       * @return {Object} thisArg
+       */
+      initialize: function(el, options) {
+        options || (options = {});
+        this.renderAndResetBound = this.renderAndReset.bind(this);
+        this.requestRenderAllBound = this.requestRenderAll.bind(this);
+        this._initStatic(el, options);
+        this._initInteractive();
+        this._createCacheCanvas();
+      },
 
-    /**
-     * Constructor
-     * @param {HTMLElement | String} el &lt;canvas> element to initialize instance on
-     * @param {Object} [options] Options object
-     * @return {Object} thisArg
-     */
-    initialize: function(el, options) {
-      options || (options = { });
-      this.renderAndResetBound = this.renderAndReset.bind(this);
-      this.requestRenderAllBound = this.requestRenderAll.bind(this);
-      this._initStatic(el, options);
-      this._initInteractive();
-      this._createCacheCanvas();
-    },
+      /**
+       * When true, objects can be transformed by one side (unproportionally)
+       * @type Boolean
+       * @default
+       */
+      uniScaleTransform: false,
 
-    /**
-     * When true, objects can be transformed by one side (unproportionally)
-     * @type Boolean
-     * @default
-     */
-    uniScaleTransform:      false,
+      /**
+       * Indicates which key enable unproportional scaling
+       * values: 'altKey', 'shiftKey', 'ctrlKey'.
+       * If `null` or 'none' or any other string that is not a modifier key
+       * feature is disabled feature disabled.
+       * @since 1.6.2
+       * @type String
+       * @default
+       */
+      uniScaleKey: "shiftKey",
 
-    /**
-     * Indicates which key enable unproportional scaling
-     * values: 'altKey', 'shiftKey', 'ctrlKey'.
-     * If `null` or 'none' or any other string that is not a modifier key
-     * feature is disabled feature disabled.
-     * @since 1.6.2
-     * @type String
-     * @default
-     */
-    uniScaleKey:           'shiftKey',
+      /**
+       * When true, objects use center point as the origin of scale transformation.
+       * <b>Backwards incompatibility note:</b> This property replaces "centerTransform" (Boolean).
+       * @since 1.3.4
+       * @type Boolean
+       * @default
+       */
+      centeredScaling: false,
 
-    /**
-     * When true, objects use center point as the origin of scale transformation.
-     * <b>Backwards incompatibility note:</b> This property replaces "centerTransform" (Boolean).
-     * @since 1.3.4
-     * @type Boolean
-     * @default
-     */
-    centeredScaling:        false,
+      /**
+       * When true, objects use center point as the origin of rotate transformation.
+       * <b>Backwards incompatibility note:</b> This property replaces "centerTransform" (Boolean).
+       * @since 1.3.4
+       * @type Boolean
+       * @default
+       */
+      centeredRotation: false,
 
-    /**
-     * When true, objects use center point as the origin of rotate transformation.
-     * <b>Backwards incompatibility note:</b> This property replaces "centerTransform" (Boolean).
-     * @since 1.3.4
-     * @type Boolean
-     * @default
-     */
-    centeredRotation:       false,
+      /**
+       * Indicates which key enable centered Transform
+       * values: 'altKey', 'shiftKey', 'ctrlKey'.
+       * If `null` or 'none' or any other string that is not a modifier key
+       * feature is disabled feature disabled.
+       * @since 1.6.2
+       * @type String
+       * @default
+       */
+      centeredKey: "altKey",
 
-    /**
-     * Indicates which key enable centered Transform
-     * values: 'altKey', 'shiftKey', 'ctrlKey'.
-     * If `null` or 'none' or any other string that is not a modifier key
-     * feature is disabled feature disabled.
-     * @since 1.6.2
-     * @type String
-     * @default
-     */
-    centeredKey:           'altKey',
+      /**
+       * Indicates which key enable alternate action on corner
+       * values: 'altKey', 'shiftKey', 'ctrlKey'.
+       * If `null` or 'none' or any other string that is not a modifier key
+       * feature is disabled feature disabled.
+       * @since 1.6.2
+       * @type String
+       * @default
+       */
+      altActionKey: "shiftKey",
 
-    /**
-     * Indicates which key enable alternate action on corner
-     * values: 'altKey', 'shiftKey', 'ctrlKey'.
-     * If `null` or 'none' or any other string that is not a modifier key
-     * feature is disabled feature disabled.
-     * @since 1.6.2
-     * @type String
-     * @default
-     */
-    altActionKey:           'shiftKey',
+      /**
+       * Indicates that canvas is interactive. This property should not be changed.
+       * @type Boolean
+       * @default
+       */
+      interactive: true,
 
-    /**
-     * Indicates that canvas is interactive. This property should not be changed.
-     * @type Boolean
-     * @default
-     */
-    interactive:            true,
+      /**
+       * Indicates whether group selection should be enabled
+       * @type Boolean
+       * @default
+       */
+      selection: true,
 
-    /**
-     * Indicates whether group selection should be enabled
-     * @type Boolean
-     * @default
-     */
-    selection:              true,
+      /**
+       * Indicates which key or keys enable multiple click selection
+       * Pass value as a string or array of strings
+       * values: 'altKey', 'shiftKey', 'ctrlKey'.
+       * If `null` or empty or containing any other string that is not a modifier key
+       * feature is disabled.
+       * @since 1.6.2
+       * @type String|Array
+       * @default
+       */
+      selectionKey: "shiftKey",
 
-    /**
-     * Indicates which key or keys enable multiple click selection
-     * Pass value as a string or array of strings
-     * values: 'altKey', 'shiftKey', 'ctrlKey'.
-     * If `null` or empty or containing any other string that is not a modifier key
-     * feature is disabled.
-     * @since 1.6.2
-     * @type String|Array
-     * @default
-     */
-    selectionKey:           'shiftKey',
+      /**
+       * Indicates which key enable alternative selection
+       * in case of target overlapping with active object
+       * values: 'altKey', 'shiftKey', 'ctrlKey'.
+       * For a series of reason that come from the general expectations on how
+       * things should work, this feature works only for preserveObjectStacking true.
+       * If `null` or 'none' or any other string that is not a modifier key
+       * feature is disabled.
+       * @since 1.6.5
+       * @type null|String
+       * @default
+       */
+      altSelectionKey: null,
 
-    /**
-     * Indicates which key enable alternative selection
-     * in case of target overlapping with active object
-     * values: 'altKey', 'shiftKey', 'ctrlKey'.
-     * For a series of reason that come from the general expectations on how
-     * things should work, this feature works only for preserveObjectStacking true.
-     * If `null` or 'none' or any other string that is not a modifier key
-     * feature is disabled.
-     * @since 1.6.5
-     * @type null|String
-     * @default
-     */
-    altSelectionKey:           null,
+      /**
+       * Color of selection
+       * @type String
+       * @default
+       */
+      selectionColor: "rgba(100, 100, 255, 0.3)", // blue
 
-    /**
-     * Color of selection
-     * @type String
-     * @default
-     */
-    selectionColor:         'rgba(100, 100, 255, 0.3)', // blue
+      /**
+       * Default dash array pattern
+       * If not empty the selection border is dashed
+       * @type Array
+       */
+      selectionDashArray: [],
 
-    /**
-     * Default dash array pattern
-     * If not empty the selection border is dashed
-     * @type Array
-     */
-    selectionDashArray:     [],
+      /**
+       * Color of the border of selection (usually slightly darker than color of selection itself)
+       * @type String
+       * @default
+       */
+      selectionBorderColor: "rgba(255, 255, 255, 0.3)",
 
-    /**
-     * Color of the border of selection (usually slightly darker than color of selection itself)
-     * @type String
-     * @default
-     */
-    selectionBorderColor:   'rgba(255, 255, 255, 0.3)',
+      /**
+       * Width of a line used in object/group selection
+       * @type Number
+       * @default
+       */
+      selectionLineWidth: 1,
 
-    /**
-     * Width of a line used in object/group selection
-     * @type Number
-     * @default
-     */
-    selectionLineWidth:     1,
+      /**
+       * Select only shapes that are fully contained in the dragged selection rectangle.
+       * @type Boolean
+       * @default
+       */
+      selectionFullyContained: false,
 
-    /**
-     * Select only shapes that are fully contained in the dragged selection rectangle.
-     * @type Boolean
-     * @default
-     */
-    selectionFullyContained: false,
+      /**
+       * Default cursor value used when hovering over an object on canvas
+       * @type String
+       * @default
+       */
+      hoverCursor: "move",
 
-    /**
-     * Default cursor value used when hovering over an object on canvas
-     * @type String
-     * @default
-     */
-    hoverCursor:            'move',
+      /**
+       * Default cursor value used when moving an object on canvas
+       * @type String
+       * @default
+       */
+      moveCursor: "move",
 
-    /**
-     * Default cursor value used when moving an object on canvas
-     * @type String
-     * @default
-     */
-    moveCursor:             'move',
+      /**
+       * Default cursor value used for the entire canvas
+       * @type String
+       * @default
+       */
+      defaultCursor: "default",
 
-    /**
-     * Default cursor value used for the entire canvas
-     * @type String
-     * @default
-     */
-    defaultCursor:          'default',
+      /**
+       * Cursor value used during free drawing
+       * @type String
+       * @default
+       */
+      freeDrawingCursor: "crosshair",
 
-    /**
-     * Cursor value used during free drawing
-     * @type String
-     * @default
-     */
-    freeDrawingCursor:      'crosshair',
+      /**
+       * Cursor value used for rotation point
+       * @type String
+       * @default
+       */
+      rotationCursor: "crosshair",
 
-    /**
-     * Cursor value used for rotation point
-     * @type String
-     * @default
-     */
-    rotationCursor:         'crosshair',
+      /**
+       * Cursor value used for disabled elements ( corners with disabled action )
+       * @type String
+       * @since 2.0.0
+       * @default
+       */
+      notAllowedCursor: "not-allowed",
 
-    /**
-     * Cursor value used for disabled elements ( corners with disabled action )
-     * @type String
-     * @since 2.0.0
-     * @default
-     */
-    notAllowedCursor:         'not-allowed',
+      /**
+       * Default element class that's given to wrapper (div) element of canvas
+       * @type String
+       * @default
+       */
+      containerClass: "canvas-container",
 
-    /**
-     * Default element class that's given to wrapper (div) element of canvas
-     * @type String
-     * @default
-     */
-    containerClass:         'canvas-container',
+      /**
+       * When true, object detection happens on per-pixel basis rather than on per-bounding-box
+       * @type Boolean
+       * @default
+       */
+      perPixelTargetFind: false,
 
-    /**
-     * When true, object detection happens on per-pixel basis rather than on per-bounding-box
-     * @type Boolean
-     * @default
-     */
-    perPixelTargetFind:     false,
+      /**
+       * Number of pixels around target pixel to tolerate (consider active) during object detection
+       * @type Number
+       * @default
+       */
+      targetFindTolerance: 0,
 
-    /**
-     * Number of pixels around target pixel to tolerate (consider active) during object detection
-     * @type Number
-     * @default
-     */
-    targetFindTolerance:    0,
+      /**
+       * When true, target detection is skipped when hovering over canvas. This can be used to improve performance.
+       * @type Boolean
+       * @default
+       */
+      skipTargetFind: false,
 
-    /**
-     * When true, target detection is skipped when hovering over canvas. This can be used to improve performance.
-     * @type Boolean
-     * @default
-     */
-    skipTargetFind:         false,
+      /**
+       * When true, mouse events on canvas (mousedown/mousemove/mouseup) result in free drawing.
+       * After mousedown, mousemove creates a shape,
+       * and then mouseup finalizes it and adds an instance of `fabric.Path` onto canvas.
+       * @tutorial {@link http://fabricjs.com/fabric-intro-part-4#free_drawing}
+       * @type Boolean
+       * @default
+       */
+      isDrawingMode: false,
 
-    /**
-     * When true, mouse events on canvas (mousedown/mousemove/mouseup) result in free drawing.
-     * After mousedown, mousemove creates a shape,
-     * and then mouseup finalizes it and adds an instance of `fabric.Path` onto canvas.
-     * @tutorial {@link http://fabricjs.com/fabric-intro-part-4#free_drawing}
-     * @type Boolean
-     * @default
-     */
-    isDrawingMode:          false,
+      /**
+       * Indicates whether objects should remain in current stack position when selected.
+       * When false objects are brought to top and rendered as part of the selection group
+       * @type Boolean
+       * @default
+       */
+      preserveObjectStacking: false,
 
-    /**
-     * Indicates whether objects should remain in current stack position when selected.
-     * When false objects are brought to top and rendered as part of the selection group
-     * @type Boolean
-     * @default
-     */
-    preserveObjectStacking: false,
+      /**
+       * Indicates the angle that an object will lock to while rotating.
+       * @type Number
+       * @since 1.6.7
+       * @default
+       */
+      snapAngle: 0,
 
-    /**
-     * Indicates the angle that an object will lock to while rotating.
-     * @type Number
-     * @since 1.6.7
-     * @default
-     */
-    snapAngle: 0,
+      /**
+       * Indicates the distance from the snapAngle the rotation will lock to the snapAngle.
+       * When `null`, the snapThreshold will default to the snapAngle.
+       * @type null|Number
+       * @since 1.6.7
+       * @default
+       */
+      snapThreshold: null,
 
-    /**
-     * Indicates the distance from the snapAngle the rotation will lock to the snapAngle.
-     * When `null`, the snapThreshold will default to the snapAngle.
-     * @type null|Number
-     * @since 1.6.7
-     * @default
-     */
-    snapThreshold: null,
+      /**
+       * Indicates if the right click on canvas can output the context menu or not
+       * @type Boolean
+       * @since 1.6.5
+       * @default
+       */
+      stopContextMenu: false,
 
-    /**
-     * Indicates if the right click on canvas can output the context menu or not
-     * @type Boolean
-     * @since 1.6.5
-     * @default
-     */
-    stopContextMenu: false,
+      /**
+       * Indicates if the canvas can fire right click events
+       * @type Boolean
+       * @since 1.6.5
+       * @default
+       */
+      fireRightClick: false,
 
-    /**
-     * Indicates if the canvas can fire right click events
-     * @type Boolean
-     * @since 1.6.5
-     * @default
-     */
-    fireRightClick: false,
+      /**
+       * Indicates if the canvas can fire middle click events
+       * @type Boolean
+       * @since 1.7.8
+       * @default
+       */
+      fireMiddleClick: false,
 
-    /**
-     * Indicates if the canvas can fire middle click events
-     * @type Boolean
-     * @since 1.7.8
-     * @default
-     */
-    fireMiddleClick: false,
+      /**
+       * @private
+       */
+      _initInteractive: function() {
+        this._currentTransform = null;
+        this._groupSelector = null;
+        this._initWrapperElement();
+        this._createUpperCanvas();
+        this._initEventListeners();
 
-    /**
-     * @private
-     */
-    _initInteractive: function() {
-      this._currentTransform = null;
-      this._groupSelector = null;
-      this._initWrapperElement();
-      this._createUpperCanvas();
-      this._initEventListeners();
+        this._initRetinaScaling();
 
-      this._initRetinaScaling();
+        this.freeDrawingBrush =
+          fabric.PencilBrush && new fabric.PencilBrush(this);
 
-      this.freeDrawingBrush = fabric.PencilBrush && new fabric.PencilBrush(this);
+        this.calcOffset();
+      },
 
-      this.calcOffset();
-    },
+      /**
+       * Divides objects in two groups, one to render immediately
+       * and one to render as activeGroup.
+       * @return {Array} objects to render immediately and pushes the other in the activeGroup.
+       */
+      _chooseObjectsToRender: function() {
+        var activeObjects = this.getActiveObjects(),
+          object,
+          objsToRender,
+          activeGroupObjects;
 
-    /**
-     * Divides objects in two groups, one to render immediately
-     * and one to render as activeGroup.
-     * @return {Array} objects to render immediately and pushes the other in the activeGroup.
-     */
-    _chooseObjectsToRender: function() {
-      var activeObjects = this.getActiveObjects(),
-          object, objsToRender, activeGroupObjects;
-
-      if (activeObjects.length > 0 && !this.preserveObjectStacking) {
-        objsToRender = [];
-        activeGroupObjects = [];
-        for (var i = 0, length = this._objects.length; i < length; i++) {
-          object = this._objects[i];
-          if (activeObjects.indexOf(object) === -1 ) {
-            objsToRender.push(object);
+        if (activeObjects.length > 0 && !this.preserveObjectStacking) {
+          objsToRender = [];
+          activeGroupObjects = [];
+          for (var i = 0, length = this._objects.length; i < length; i++) {
+            object = this._objects[i];
+            if (activeObjects.indexOf(object) === -1) {
+              objsToRender.push(object);
+            } else {
+              activeGroupObjects.push(object);
+            }
           }
-          else {
-            activeGroupObjects.push(object);
+          if (activeObjects.length > 1) {
+            this._activeObject._objects = activeGroupObjects;
           }
+          objsToRender.push.apply(objsToRender, activeGroupObjects);
+        } else {
+          objsToRender = this._objects;
         }
-        if (activeObjects.length > 1) {
-          this._activeObject._objects = activeGroupObjects;
+        return objsToRender;
+      },
+
+      /**
+       * Renders both the top canvas and the secondary container canvas.
+       * @return {fabric.Canvas} instance
+       * @chainable
+       */
+      renderAll: function() {
+        if (
+          this.contextTopDirty &&
+          !this._groupSelector &&
+          !this.isDrawingMode
+        ) {
+          this.clearContext(this.contextTop);
+          this.contextTopDirty = false;
         }
-        objsToRender.push.apply(objsToRender, activeGroupObjects);
-      }
-      else {
-        objsToRender = this._objects;
-      }
-      return objsToRender;
-    },
-
-    /**
-     * Renders both the top canvas and the secondary container canvas.
-     * @return {fabric.Canvas} instance
-     * @chainable
-     */
-    renderAll: function () {
-      if (this.contextTopDirty && !this._groupSelector && !this.isDrawingMode) {
-        this.clearContext(this.contextTop);
-        this.contextTopDirty = false;
-      }
-      if (this.hasLostContext) {
-        this.renderTopLayer(this.contextTop);
-      }
-      var canvasToDrawOn = this.contextContainer;
-      this.renderCanvas(canvasToDrawOn, this._chooseObjectsToRender());
-      return this;
-    },
-
-    renderTopLayer: function(ctx) {
-      ctx.save();
-      if (this.isDrawingMode && this._isCurrentlyDrawing) {
-        this.freeDrawingBrush && this.freeDrawingBrush._render();
-        this.contextTopDirty = true;
-      }
-      // we render the top context - last object
-      if (this.selection && this._groupSelector) {
-        this._drawSelection(ctx);
-        this.contextTopDirty = true;
-      }
-      ctx.restore();
-    },
-
-    /**
-     * Method to render only the top canvas.
-     * Also used to render the group selection box.
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    renderTop: function () {
-      var ctx = this.contextTop;
-      this.clearContext(ctx);
-      this.renderTopLayer(ctx);
-      this.fire('after:render');
-      return this;
-    },
-
-    /**
-     * Resets the current transform to its original values and chooses the type of resizing based on the event
-     * @private
-     */
-    _resetCurrentTransform: function() {
-      var t = this._currentTransform;
-
-      t.target.set({
-        scaleX: t.original.scaleX,
-        scaleY: t.original.scaleY,
-        skewX: t.original.skewX,
-        skewY: t.original.skewY,
-        left: t.original.left,
-        top: t.original.top
-      });
-
-      if (this._shouldCenterTransform(t.target)) {
-        if (t.originX !== 'center') {
-          if (t.originX === 'right') {
-            t.mouseXSign = -1;
-          }
-          else {
-            t.mouseXSign = 1;
-          }
+        if (this.hasLostContext) {
+          this.renderTopLayer(this.contextTop);
         }
-        if (t.originY !== 'center') {
-          if (t.originY === 'bottom') {
-            t.mouseYSign = -1;
-          }
-          else {
-            t.mouseYSign = 1;
-          }
+        var canvasToDrawOn = this.contextContainer;
+        this.renderCanvas(canvasToDrawOn, this._chooseObjectsToRender());
+        return this;
+      },
+
+      renderTopLayer: function(ctx) {
+        ctx.save();
+        if (this.isDrawingMode && this._isCurrentlyDrawing) {
+          this.freeDrawingBrush && this.freeDrawingBrush._render();
+          this.contextTopDirty = true;
         }
+        // we render the top context - last object
+        if (this.selection && this._groupSelector) {
+          this._drawSelection(ctx);
+          this.contextTopDirty = true;
+        }
+        ctx.restore();
+      },
 
-        t.originX = 'center';
-        t.originY = 'center';
-      }
-      else {
-        t.originX = t.original.originX;
-        t.originY = t.original.originY;
-      }
-    },
+      /**
+       * Method to render only the top canvas.
+       * Also used to render the group selection box.
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      renderTop: function() {
+        var ctx = this.contextTop;
+        this.clearContext(ctx);
+        this.renderTopLayer(ctx);
+        this.fire("after:render");
+        return this;
+      },
 
-    /**
-     * Checks if point is contained within an area of given object
-     * @param {Event} e Event object
-     * @param {fabric.Object} target Object to test against
-     * @param {Object} [point] x,y object of point coordinates we want to check.
-     * @return {Boolean} true if point is contained within an area of given object
-     */
-    containsPoint: function (e, target, point) {
-      var ignoreZoom = true,
+      /**
+       * Resets the current transform to its original values and chooses the type of resizing based on the event
+       * @private
+       */
+      _resetCurrentTransform: function() {
+        var t = this._currentTransform;
+
+        t.target.set({
+          scaleX: t.original.scaleX,
+          scaleY: t.original.scaleY,
+          skewX: t.original.skewX,
+          skewY: t.original.skewY,
+          left: t.original.left,
+          top: t.original.top
+        });
+
+        if (this._shouldCenterTransform(t.target)) {
+          if (t.originX !== "center") {
+            if (t.originX === "right") {
+              t.mouseXSign = -1;
+            } else {
+              t.mouseXSign = 1;
+            }
+          }
+          if (t.originY !== "center") {
+            if (t.originY === "bottom") {
+              t.mouseYSign = -1;
+            } else {
+              t.mouseYSign = 1;
+            }
+          }
+
+          t.originX = "center";
+          t.originY = "center";
+        } else {
+          t.originX = t.original.originX;
+          t.originY = t.original.originY;
+        }
+      },
+
+      /**
+       * Checks if point is contained within an area of given object
+       * @param {Event} e Event object
+       * @param {fabric.Object} target Object to test against
+       * @param {Object} [point] x,y object of point coordinates we want to check.
+       * @return {Boolean} true if point is contained within an area of given object
+       */
+      containsPoint: function(e, target, point) {
+        var ignoreZoom = true,
           pointer = point || this.getPointer(e, ignoreZoom),
           xy;
 
-      if (target.group && target.group === this._activeObject && target.group.type === 'activeSelection') {
-        xy = this._normalizePointer(target.group, pointer);
-      }
-      else {
-        xy = { x: pointer.x, y: pointer.y };
-      }
-      // http://www.geog.ubc.ca/courses/klink/gis.notes/ncgia/u32.html
-      // http://idav.ucdavis.edu/~okreylos/TAship/Spring2000/PointInPolygon.html
-      return (target.containsPoint(xy) || target._findTargetCorner(pointer));
-    },
+        if (
+          target.group &&
+          target.group === this._activeObject &&
+          target.group.type === "activeSelection"
+        ) {
+          xy = this._normalizePointer(target.group, pointer);
+        } else {
+          xy = { x: pointer.x, y: pointer.y };
+        }
+        // http://www.geog.ubc.ca/courses/klink/gis.notes/ncgia/u32.html
+        // http://idav.ucdavis.edu/~okreylos/TAship/Spring2000/PointInPolygon.html
+        return target.containsPoint(xy) || target._findTargetCorner(pointer);
+      },
 
-    /**
-     * @private
-     */
-    _normalizePointer: function (object, pointer) {
-      var m = object.calcTransformMatrix(),
+      /**
+       * @private
+       */
+      _normalizePointer: function(object, pointer) {
+        var m = object.calcTransformMatrix(),
           invertedM = fabric.util.invertTransform(m),
           vptPointer = this.restorePointerVpt(pointer);
-      return fabric.util.transformPoint(vptPointer, invertedM);
-    },
+        return fabric.util.transformPoint(vptPointer, invertedM);
+      },
 
-    /**
-     * Returns true if object is transparent at a certain location
-     * @param {fabric.Object} target Object to check
-     * @param {Number} x Left coordinate
-     * @param {Number} y Top coordinate
-     * @return {Boolean}
-     */
-    isTargetTransparent: function (target, x, y) {
-      // in case the target is the activeObject, we cannot execute this optimization
-      // because we need to draw controls too.
-      if (target.shouldCache() && target._cacheCanvas && target !== this._activeObject) {
-        var normalizedPointer = this._normalizePointer(target, {x: x, y: y}),
-            targetRelativeX = Math.max(target.cacheTranslationX + (normalizedPointer.x * target.zoomX), 0),
-            targetRelativeY = Math.max(target.cacheTranslationY + (normalizedPointer.y * target.zoomY), 0);
+      /**
+       * Returns true if object is transparent at a certain location
+       * @param {fabric.Object} target Object to check
+       * @param {Number} x Left coordinate
+       * @param {Number} y Top coordinate
+       * @return {Boolean}
+       */
+      isTargetTransparent: function(target, x, y) {
+        // in case the target is the activeObject, we cannot execute this optimization
+        // because we need to draw controls too.
+        if (
+          target.shouldCache() &&
+          target._cacheCanvas &&
+          target !== this._activeObject
+        ) {
+          var normalizedPointer = this._normalizePointer(target, {
+              x: x,
+              y: y
+            }),
+            targetRelativeX = Math.max(
+              target.cacheTranslationX + normalizedPointer.x * target.zoomX,
+              0
+            ),
+            targetRelativeY = Math.max(
+              target.cacheTranslationY + normalizedPointer.y * target.zoomY,
+              0
+            );
+
+          var isTransparent = fabric.util.isTransparent(
+            target._cacheContext,
+            Math.round(targetRelativeX),
+            Math.round(targetRelativeY),
+            this.targetFindTolerance
+          );
+
+          return isTransparent;
+        }
+
+        var ctx = this.contextCache,
+          originalColor = target.selectionBackgroundColor,
+          v = this.viewportTransform;
+
+        target.selectionBackgroundColor = "";
+
+        this.clearContext(ctx);
+
+        ctx.save();
+        ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+        target.render(ctx);
+        ctx.restore();
+
+        target === this._activeObject &&
+          target._renderControls(
+            ctx,
+            {
+              hasBorders: false,
+              transparentCorners: false
+            },
+            {
+              hasBorders: false
+            }
+          );
+
+        target.selectionBackgroundColor = originalColor;
 
         var isTransparent = fabric.util.isTransparent(
-          target._cacheContext, Math.round(targetRelativeX), Math.round(targetRelativeY), this.targetFindTolerance);
+          ctx,
+          x,
+          y,
+          this.targetFindTolerance
+        );
 
         return isTransparent;
-      }
+      },
 
-      var ctx = this.contextCache,
-          originalColor = target.selectionBackgroundColor, v = this.viewportTransform;
+      /**
+       * takes an event and determins if selection key has been pressed
+       * @private
+       * @param {Event} e Event object
+       */
+      _isSelectionKeyPressed: function(e) {
+        var selectionKeyPressed = false;
 
-      target.selectionBackgroundColor = '';
+        if (
+          Object.prototype.toString.call(this.selectionKey) === "[object Array]"
+        ) {
+          selectionKeyPressed = !!this.selectionKey.find(function(key) {
+            return e[key] === true;
+          });
+        } else {
+          selectionKeyPressed = e[this.selectionKey];
+        }
 
-      this.clearContext(ctx);
+        return selectionKeyPressed;
+      },
 
-      ctx.save();
-      ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
-      target.render(ctx);
-      ctx.restore();
-
-      target === this._activeObject && target._renderControls(ctx, {
-        hasBorders: false,
-        transparentCorners: false
-      }, {
-        hasBorders: false,
-      });
-
-      target.selectionBackgroundColor = originalColor;
-
-      var isTransparent = fabric.util.isTransparent(
-        ctx, x, y, this.targetFindTolerance);
-
-      return isTransparent;
-    },
-
-    /**
-     * takes an event and determins if selection key has been pressed
-     * @private
-     * @param {Event} e Event object
-     */
-    _isSelectionKeyPressed: function(e) {
-      var selectionKeyPressed = false;
-
-      if (Object.prototype.toString.call(this.selectionKey) === '[object Array]') {
-        selectionKeyPressed = !!this.selectionKey.find(function(key) { return e[key] === true; });
-      }
-      else {
-        selectionKeyPressed = e[this.selectionKey];
-      }
-
-      return selectionKeyPressed;
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object
-     * @param {fabric.Object} target
-     */
-    _shouldClearSelection: function (e, target) {
-      var activeObjects = this.getActiveObjects(),
+      /**
+       * @private
+       * @param {Event} e Event object
+       * @param {fabric.Object} target
+       */
+      _shouldClearSelection: function(e, target) {
+        var activeObjects = this.getActiveObjects(),
           activeObject = this._activeObject;
 
-      return (
-        !target
-        ||
-        (target &&
-          activeObject &&
-          activeObjects.length > 1 &&
-          activeObjects.indexOf(target) === -1 &&
-          activeObject !== target &&
-          !this._isSelectionKeyPressed(e))
-        ||
-        (target && !target.evented)
-        ||
-        (target &&
-          !target.selectable &&
-          activeObject &&
-          activeObject !== target)
-      );
-    },
+        return (
+          !target ||
+          (target &&
+            activeObject &&
+            activeObjects.length > 1 &&
+            activeObjects.indexOf(target) === -1 &&
+            activeObject !== target &&
+            !this._isSelectionKeyPressed(e)) ||
+          (target && !target.evented) ||
+          (target &&
+            !target.selectable &&
+            activeObject &&
+            activeObject !== target)
+        );
+      },
 
-    /**
-     * centeredScaling from object can't override centeredScaling from canvas.
-     * this should be fixed, since object setting should take precedence over canvas.
-     * @private
-     * @param {fabric.Object} target
-     */
-    _shouldCenterTransform: function (target) {
-      if (!target) {
-        return;
-      }
+      /**
+       * centeredScaling from object can't override centeredScaling from canvas.
+       * this should be fixed, since object setting should take precedence over canvas.
+       * @private
+       * @param {fabric.Object} target
+       */
+      _shouldCenterTransform: function(target) {
+        if (!target) {
+          return;
+        }
 
-      var t = this._currentTransform,
+        var t = this._currentTransform,
           centerTransform;
 
-      if (t.action === 'scale' || t.action === 'scaleX' || t.action === 'scaleY') {
-        centerTransform = this.centeredScaling || target.centeredScaling;
-      }
-      else if (t.action === 'rotate') {
-        centerTransform = this.centeredRotation || target.centeredRotation;
-      }
+        if (
+          t.action === "scale" ||
+          t.action === "scaleX" ||
+          t.action === "scaleY"
+        ) {
+          centerTransform = this.centeredScaling || target.centeredScaling;
+        } else if (t.action === "rotate") {
+          centerTransform = this.centeredRotation || target.centeredRotation;
+        }
 
-      return centerTransform ? !t.altKey : t.altKey;
-    },
+        return centerTransform ? !t.altKey : t.altKey;
+      },
 
-    /**
-     * @private
-     */
-    _getOriginFromCorner: function(target, corner) {
-      var origin = {
-        x: target.originX,
-        y: target.originY
-      };
+      /**
+       * @private
+       */
+      _getOriginFromCorner: function(target, corner) {
+        var origin = {
+          x: target.originX,
+          y: target.originY
+        };
 
-      if (corner === 'ml' || corner === 'tl' || corner === 'bl') {
-        origin.x = 'right';
-      }
-      else if (corner === 'mr' || corner === 'tr' || corner === 'br') {
-        origin.x = 'left';
-      }
+        if (corner === "ml" || corner === "tl" || corner === "bl") {
+          origin.x = "right";
+        } else if (corner === "mr" || corner === "tr" || corner === "br") {
+          origin.x = "left";
+        }
 
-      if (corner === 'tl' || corner === 'mt' || corner === 'tr') {
-        origin.y = 'bottom';
-      }
-      else if (corner === 'bl' || corner === 'mb' || corner === 'br') {
-        origin.y = 'top';
-      }
+        if (corner === "tl" || corner === "mt" || corner === "tr") {
+          origin.y = "bottom";
+        } else if (corner === "bl" || corner === "mb" || corner === "br") {
+          origin.y = "top";
+        }
 
-      return origin;
-    },
+        return origin;
+      },
 
-    /**
-     * @private
-     * @param {Boolean} alreadySelected true if target is already selected
-     * @param {String} corner a string representing the corner ml, mr, tl ...
-     * @param {Event} e Event object
-     * @param {fabric.Object} [target] inserted back to help overriding. Unused
-     */
-    _getActionFromCorner: function(alreadySelected, corner, e /* target */) {
-      if (!corner || !alreadySelected) {
-        return 'drag';
-      }
+      /**
+       * @private
+       * @param {Boolean} alreadySelected true if target is already selected
+       * @param {String} corner a string representing the corner ml, mr, tl ...
+       * @param {Event} e Event object
+       * @param {fabric.Object} [target] inserted back to help overriding. Unused
+       */
+      _getActionFromCorner: function(alreadySelected, corner, e /* target */) {
+        if (!corner || !alreadySelected) {
+          return "drag";
+        }
 
-      switch (corner) {
-        case 'mtr':
-          return 'rotate';
-        case 'ml':
-        case 'mr':
-          return e[this.altActionKey] ? 'skewY' : 'scaleX';
-        case 'mt':
-        case 'mb':
-          return e[this.altActionKey] ? 'skewX' : 'scaleY';
-        default:
-          return 'scale';
-      }
-    },
+        switch (corner) {
+          case "mtr":
+            return "rotate";
+          case "ml":
+          case "mr":
+            return e[this.altActionKey] ? "skewY" : "scaleX";
+          case "mt":
+          case "mb":
+            return e[this.altActionKey] ? "skewX" : "scaleY";
+          default:
+            return "scale";
+        }
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event object
-     * @param {fabric.Object} target
-     */
-    _setupCurrentTransform: function (e, target, alreadySelected) {
-      if (!target) {
-        return;
-      }
+      /**
+       * @private
+       * @param {Event} e Event object
+       * @param {fabric.Object} target
+       */
+      _setupCurrentTransform: function(e, target, alreadySelected) {
+        if (!target) {
+          return;
+        }
 
-      var pointer = this.getPointer(e),
+        var pointer = this.getPointer(e),
           corner = target._findTargetCorner(this.getPointer(e, true)),
-          action = this._getActionFromCorner(alreadySelected, corner, e, target),
+          action = this._getActionFromCorner(
+            alreadySelected,
+            corner,
+            e,
+            target
+          ),
           origin = this._getOriginFromCorner(target, corner);
 
-      this._currentTransform = {
-        target: target,
-        action: action,
-        corner: corner,
-        scaleX: target.scaleX,
-        scaleY: target.scaleY,
-        skewX: target.skewX,
-        skewY: target.skewY,
-        // used by transation
-        offsetX: pointer.x - target.left,
-        offsetY: pointer.y - target.top,
-        originX: origin.x,
-        originY: origin.y,
-        ex: pointer.x,
-        ey: pointer.y,
-        lastX: pointer.x,
-        lastY: pointer.y,
-        // unsure they are usefull anymore.
-        // left: target.left,
-        // top: target.top,
-        theta: degreesToRadians(target.angle),
-        // end of unsure
-        width: target.width * target.scaleX,
-        mouseXSign: 1,
-        mouseYSign: 1,
-        shiftKey: e.shiftKey,
-        altKey: e[this.centeredKey],
-        original: fabric.util.saveObjectTransform(target),
-      };
+        this._currentTransform = {
+          target: target,
+          action: action,
+          corner: corner,
+          scaleX: target.scaleX,
+          scaleY: target.scaleY,
+          skewX: target.skewX,
+          skewY: target.skewY,
+          // used by transation
+          offsetX: pointer.x - target.left,
+          offsetY: pointer.y - target.top,
+          originX: origin.x,
+          originY: origin.y,
+          ex: pointer.x,
+          ey: pointer.y,
+          lastX: pointer.x,
+          lastY: pointer.y,
+          // unsure they are usefull anymore.
+          // left: target.left,
+          // top: target.top,
+          theta: degreesToRadians(target.angle),
+          // end of unsure
+          width: target.width * target.scaleX,
+          mouseXSign: 1,
+          mouseYSign: 1,
+          shiftKey: e.shiftKey,
+          altKey: e[this.centeredKey],
+          original: fabric.util.saveObjectTransform(target)
+        };
 
-      this._currentTransform.original.originX = origin.x;
-      this._currentTransform.original.originY = origin.y;
+        this._currentTransform.original.originX = origin.x;
+        this._currentTransform.original.originY = origin.y;
 
-      this._resetCurrentTransform();
-      this._beforeTransform(e);
-    },
+        this._resetCurrentTransform();
+        this._beforeTransform(e);
+      },
 
-    /**
-     * Translates object by "setting" its left/top
-     * @private
-     * @param {Number} x pointer's x coordinate
-     * @param {Number} y pointer's y coordinate
-     * @return {Boolean} true if the translation occurred
-     */
-    _translateObject: function (x, y) {
-      var transform = this._currentTransform,
+      /**
+       * Translates object by "setting" its left/top
+       * @private
+       * @param {Number} x pointer's x coordinate
+       * @param {Number} y pointer's y coordinate
+       * @return {Boolean} true if the translation occurred
+       */
+      _translateObject: function(x, y) {
+        var transform = this._currentTransform,
           target = transform.target,
           newLeft = x - transform.offsetX,
           newTop = y - transform.offsetY,
-          moveX = !target.get('lockMovementX') && target.left !== newLeft,
-          moveY = !target.get('lockMovementY') && target.top !== newTop;
+          moveX = !target.get("lockMovementX") && target.left !== newLeft,
+          moveY = !target.get("lockMovementY") && target.top !== newTop;
 
-      moveX && target.set('left', newLeft);
-      moveY && target.set('top', newTop);
-      return moveX || moveY;
-    },
+        moveX && target.set("left", newLeft);
+        moveY && target.set("top", newTop);
+        return moveX || moveY;
+      },
 
-    /**
-     * Check if we are increasing a positive skew or lower it,
-     * checking mouse direction and pressed corner.
-     * @private
-     */
-    _changeSkewTransformOrigin: function(mouseMove, t, by) {
-      var property = 'originX', origins = { 0: 'center' },
-          skew = t.target.skewX, originA = 'left', originB = 'right',
-          corner = t.corner === 'mt' || t.corner === 'ml' ? 1 : -1,
+      /**
+       * Check if we are increasing a positive skew or lower it,
+       * checking mouse direction and pressed corner.
+       * @private
+       */
+      _changeSkewTransformOrigin: function(mouseMove, t, by) {
+        var property = "originX",
+          origins = { 0: "center" },
+          skew = t.target.skewX,
+          originA = "left",
+          originB = "right",
+          corner = t.corner === "mt" || t.corner === "ml" ? 1 : -1,
           flipSign = 1;
 
-      mouseMove = mouseMove > 0 ? 1 : -1;
-      if (by === 'y') {
-        skew = t.target.skewY;
-        originA = 'top';
-        originB = 'bottom';
-        property = 'originY';
-      }
-      origins[-1] = originA;
-      origins[1] = originB;
+        mouseMove = mouseMove > 0 ? 1 : -1;
+        if (by === "y") {
+          skew = t.target.skewY;
+          originA = "top";
+          originB = "bottom";
+          property = "originY";
+        }
+        origins[-1] = originA;
+        origins[1] = originB;
 
-      t.target.flipX && (flipSign *= -1);
-      t.target.flipY && (flipSign *= -1);
+        t.target.flipX && (flipSign *= -1);
+        t.target.flipY && (flipSign *= -1);
 
-      if (skew === 0) {
-        t.skewSign = -corner * mouseMove * flipSign;
-        t[property] = origins[-mouseMove];
-      }
-      else {
-        skew = skew > 0 ? 1 : -1;
-        t.skewSign = skew;
-        t[property] = origins[skew * corner * flipSign];
-      }
-    },
+        if (skew === 0) {
+          t.skewSign = -corner * mouseMove * flipSign;
+          t[property] = origins[-mouseMove];
+        } else {
+          skew = skew > 0 ? 1 : -1;
+          t.skewSign = skew;
+          t[property] = origins[skew * corner * flipSign];
+        }
+      },
 
-    /**
-     * Skew object by mouse events
-     * @private
-     * @param {Number} x pointer's x coordinate
-     * @param {Number} y pointer's y coordinate
-     * @param {String} by Either 'x' or 'y'
-     * @return {Boolean} true if the skewing occurred
-     */
-    _skewObject: function (x, y, by) {
-      var t = this._currentTransform,
-          target = t.target, skewed = false,
-          lockSkewingX = target.get('lockSkewingX'),
-          lockSkewingY = target.get('lockSkewingY');
+      /**
+       * Skew object by mouse events
+       * @private
+       * @param {Number} x pointer's x coordinate
+       * @param {Number} y pointer's y coordinate
+       * @param {String} by Either 'x' or 'y'
+       * @return {Boolean} true if the skewing occurred
+       */
+      _skewObject: function(x, y, by) {
+        var t = this._currentTransform,
+          target = t.target,
+          skewed = false,
+          lockSkewingX = target.get("lockSkewingX"),
+          lockSkewingY = target.get("lockSkewingY");
 
-      if ((lockSkewingX && by === 'x') || (lockSkewingY && by === 'y')) {
-        return false;
-      }
+        if ((lockSkewingX && by === "x") || (lockSkewingY && by === "y")) {
+          return false;
+        }
 
-      // Get the constraint point
-      var center = target.getCenterPoint(),
-          actualMouseByCenter = target.toLocalPoint(new fabric.Point(x, y), 'center', 'center')[by],
-          lastMouseByCenter = target.toLocalPoint(new fabric.Point(t.lastX, t.lastY), 'center', 'center')[by],
-          actualMouseByOrigin, constraintPosition, dim = target._getTransformedDimensions();
+        // Get the constraint point
+        var center = target.getCenterPoint(),
+          actualMouseByCenter = target.toLocalPoint(
+            new fabric.Point(x, y),
+            "center",
+            "center"
+          )[by],
+          lastMouseByCenter = target.toLocalPoint(
+            new fabric.Point(t.lastX, t.lastY),
+            "center",
+            "center"
+          )[by],
+          actualMouseByOrigin,
+          constraintPosition,
+          dim = target._getTransformedDimensions();
 
-      this._changeSkewTransformOrigin(actualMouseByCenter - lastMouseByCenter, t, by);
-      actualMouseByOrigin = target.toLocalPoint(new fabric.Point(x, y), t.originX, t.originY)[by];
-      constraintPosition = target.translateToOriginPoint(center, t.originX, t.originY);
-      // Actually skew the object
-      skewed = this._setObjectSkew(actualMouseByOrigin, t, by, dim);
-      t.lastX = x;
-      t.lastY = y;
-      // Make sure the constraints apply
-      target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
-      return skewed;
-    },
+        this._changeSkewTransformOrigin(
+          actualMouseByCenter - lastMouseByCenter,
+          t,
+          by
+        );
+        actualMouseByOrigin = target.toLocalPoint(
+          new fabric.Point(x, y),
+          t.originX,
+          t.originY
+        )[by];
+        constraintPosition = target.translateToOriginPoint(
+          center,
+          t.originX,
+          t.originY
+        );
+        // Actually skew the object
+        skewed = this._setObjectSkew(actualMouseByOrigin, t, by, dim);
+        t.lastX = x;
+        t.lastY = y;
+        // Make sure the constraints apply
+        target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
+        return skewed;
+      },
 
-    /**
-     * Set object skew
-     * @private
-     * @return {Boolean} true if the skewing occurred
-     */
-    _setObjectSkew: function(localMouse, transform, by, _dim) {
-      var target = transform.target, newValue, skewed = false,
-          skewSign = transform.skewSign, newDim, dimNoSkew,
-          otherBy, _otherBy, _by, newDimMouse, skewX, skewY;
+      /**
+       * Set object skew
+       * @private
+       * @return {Boolean} true if the skewing occurred
+       */
+      _setObjectSkew: function(localMouse, transform, by, _dim) {
+        var target = transform.target,
+          newValue,
+          skewed = false,
+          skewSign = transform.skewSign,
+          newDim,
+          dimNoSkew,
+          otherBy,
+          _otherBy,
+          _by,
+          newDimMouse,
+          skewX,
+          skewY;
 
-      if (by === 'x') {
-        otherBy = 'y';
-        _otherBy = 'Y';
-        _by = 'X';
-        skewX = 0;
-        skewY = target.skewY;
-      }
-      else {
-        otherBy = 'x';
-        _otherBy = 'X';
-        _by = 'Y';
-        skewX = target.skewX;
-        skewY = 0;
-      }
+        if (by === "x") {
+          otherBy = "y";
+          _otherBy = "Y";
+          _by = "X";
+          skewX = 0;
+          skewY = target.skewY;
+        } else {
+          otherBy = "x";
+          _otherBy = "X";
+          _by = "Y";
+          skewX = target.skewX;
+          skewY = 0;
+        }
 
-      dimNoSkew = target._getTransformedDimensions(skewX, skewY);
-      newDimMouse = 2 * Math.abs(localMouse) - dimNoSkew[by];
-      if (newDimMouse <= 2) {
-        newValue = 0;
-      }
-      else {
-        newValue = skewSign * Math.atan((newDimMouse / target['scale' + _by]) /
-                                        (dimNoSkew[otherBy] / target['scale' + _otherBy]));
-        newValue = fabric.util.radiansToDegrees(newValue);
-      }
-      skewed = target['skew' + _by] !== newValue;
-      target.set('skew' + _by, newValue);
-      if (target['skew' + _otherBy] !== 0) {
-        newDim = target._getTransformedDimensions();
-        newValue = (_dim[otherBy] / newDim[otherBy]) * target['scale' + _otherBy];
-        target.set('scale' + _otherBy, newValue);
-      }
-      return skewed;
-    },
+        dimNoSkew = target._getTransformedDimensions(skewX, skewY);
+        newDimMouse = 2 * Math.abs(localMouse) - dimNoSkew[by];
+        if (newDimMouse <= 2) {
+          newValue = 0;
+        } else {
+          newValue =
+            skewSign *
+            Math.atan(
+              newDimMouse /
+                target["scale" + _by] /
+                (dimNoSkew[otherBy] / target["scale" + _otherBy])
+            );
+          newValue = fabric.util.radiansToDegrees(newValue);
+        }
+        skewed = target["skew" + _by] !== newValue;
+        target.set("skew" + _by, newValue);
+        if (target["skew" + _otherBy] !== 0) {
+          newDim = target._getTransformedDimensions();
+          newValue =
+            (_dim[otherBy] / newDim[otherBy]) * target["scale" + _otherBy];
+          target.set("scale" + _otherBy, newValue);
+        }
+        return skewed;
+      },
 
-    /**
-     * Scales object by invoking its scaleX/scaleY methods
-     * @private
-     * @param {Number} x pointer's x coordinate
-     * @param {Number} y pointer's y coordinate
-     * @param {String} by Either 'x' or 'y' - specifies dimension constraint by which to scale an object.
-     *                    When not provided, an object is scaled by both dimensions equally
-     * @return {Boolean} true if the scaling occurred
-     */
-    _scaleObject: function (x, y, by) {
-      var t = this._currentTransform,
+      /**
+       * Scales object by invoking its scaleX/scaleY methods
+       * @private
+       * @param {Number} x pointer's x coordinate
+       * @param {Number} y pointer's y coordinate
+       * @param {String} by Either 'x' or 'y' - specifies dimension constraint by which to scale an object.
+       *                    When not provided, an object is scaled by both dimensions equally
+       * @return {Boolean} true if the scaling occurred
+       */
+      _scaleObject: function(x, y, by) {
+        var t = this._currentTransform,
           target = t.target,
           lockScalingX = target.lockScalingX,
           lockScalingY = target.lockScalingY,
           lockScalingFlip = target.lockScalingFlip;
 
-      if (lockScalingX && lockScalingY) {
-        return false;
-      }
+        if (lockScalingX && lockScalingY) {
+          return false;
+        }
 
-      // Get the constraint point
-      var constraintPosition = target.translateToOriginPoint(target.getCenterPoint(), t.originX, t.originY),
-          localMouse = target.toLocalPoint(new fabric.Point(x, y), t.originX, t.originY),
-          dim = target._getTransformedDimensions(), scaled = false;
+        // Get the constraint point
+        var constraintPosition = target.translateToOriginPoint(
+            target.getCenterPoint(),
+            t.originX,
+            t.originY
+          ),
+          localMouse = target.toLocalPoint(
+            new fabric.Point(x, y),
+            t.originX,
+            t.originY
+          ),
+          dim = target._getTransformedDimensions(),
+          scaled = false;
 
-      this._setLocalMouse(localMouse, t);
+        this._setLocalMouse(localMouse, t);
 
-      // Actually scale the object
-      scaled = this._setObjectScale(localMouse, t, lockScalingX, lockScalingY, by, lockScalingFlip, dim);
+        // Actually scale the object
+        scaled = this._setObjectScale(
+          localMouse,
+          t,
+          lockScalingX,
+          lockScalingY,
+          by,
+          lockScalingFlip,
+          dim
+        );
 
-      // Make sure the constraints apply
-      target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
-      return scaled;
-    },
+        // Make sure the constraints apply
+        target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
+        return scaled;
+      },
 
-    /**
-     * @private
-     * @return {Boolean} true if the scaling occurred
-     */
-    _setObjectScale: function(localMouse, transform, lockScalingX, lockScalingY, by, lockScalingFlip, _dim) {
-      var target = transform.target, forbidScalingX = false, forbidScalingY = false, scaled = false,
-          scaleX = localMouse.x * target.scaleX / _dim.x,
-          scaleY = localMouse.y * target.scaleY / _dim.y,
+      /**
+       * @private
+       * @return {Boolean} true if the scaling occurred
+       */
+      _setObjectScale: function(
+        localMouse,
+        transform,
+        lockScalingX,
+        lockScalingY,
+        by,
+        lockScalingFlip,
+        _dim
+      ) {
+        var target = transform.target,
+          forbidScalingX = false,
+          forbidScalingY = false,
+          scaled = false,
+          scaleX = (localMouse.x * target.scaleX) / _dim.x,
+          scaleY = (localMouse.y * target.scaleY) / _dim.y,
           changeX = target.scaleX !== scaleX,
           changeY = target.scaleY !== scaleY;
 
-      if (lockScalingFlip && scaleX <= 0 && scaleX < target.scaleX) {
-        forbidScalingX = true;
-        localMouse.x = 0;
-      }
-
-      if (lockScalingFlip && scaleY <= 0 && scaleY < target.scaleY) {
-        forbidScalingY = true;
-        localMouse.y = 0;
-      }
-
-      if (by === 'equally' && !lockScalingX && !lockScalingY) {
-        scaled = this._scaleObjectEqually(localMouse, target, transform, _dim);
-      }
-      else if (!by) {
-        forbidScalingX || lockScalingX || (target.set('scaleX', scaleX) && (scaled = scaled || changeX));
-        forbidScalingY || lockScalingY || (target.set('scaleY', scaleY) && (scaled = scaled || changeY));
-      }
-      else if (by === 'x' && !target.get('lockUniScaling')) {
-        forbidScalingX || lockScalingX || (target.set('scaleX', scaleX) && (scaled = changeX));
-      }
-      else if (by === 'y' && !target.get('lockUniScaling')) {
-        forbidScalingY || lockScalingY || (target.set('scaleY', scaleY) && (scaled = changeY));
-      }
-      transform.newScaleX = scaleX;
-      transform.newScaleY = scaleY;
-      forbidScalingX || forbidScalingY || this._flipObject(transform, by);
-      return scaled;
-    },
-
-    /**
-     * @private
-     * @return {Boolean} true if the scaling occurred
-     */
-    _scaleObjectEqually: function(localMouse, target, transform, _dim) {
-
-      var dist = localMouse.y + localMouse.x,
-          lastDist = _dim.y * transform.original.scaleY / target.scaleY +
-                     _dim.x * transform.original.scaleX / target.scaleX,
-          scaled, signX = localMouse.x < 0 ? -1 : 1,
-          signY = localMouse.y < 0 ? -1 : 1, newScaleX, newScaleY;
-
-      // We use transform.scaleX/Y instead of target.scaleX/Y
-      // because the object may have a min scale and we'll loose the proportions
-      newScaleX = signX * Math.abs(transform.original.scaleX * dist / lastDist);
-      newScaleY = signY * Math.abs(transform.original.scaleY * dist / lastDist);
-      scaled = newScaleX !== target.scaleX || newScaleY !== target.scaleY;
-      target.set('scaleX', newScaleX);
-      target.set('scaleY', newScaleY);
-      return scaled;
-    },
-
-    /**
-     * @private
-     */
-    _flipObject: function(transform, by) {
-      if (transform.newScaleX < 0 && by !== 'y') {
-        if (transform.originX === 'left') {
-          transform.originX = 'right';
+        transform.newScaleX = scaleX;
+        transform.newScaleY = scaleY;
+        if (by === "x" && target instanceof fabric.Textbox) {
+          var w = target.width * (localMouse.x / _dim.x);
+          if (w >= target.getMinWidth()) {
+            scaled = w !== target.width;
+            target.set("width", w);
+            return scaled;
+          }
+          return false;
         }
-        else if (transform.originX === 'right') {
-          transform.originX = 'left';
-        }
-      }
 
-      if (transform.newScaleY < 0 && by !== 'x') {
-        if (transform.originY === 'top') {
-          transform.originY = 'bottom';
+        if (lockScalingFlip && scaleX <= 0 && scaleX < target.scaleX) {
+          forbidScalingX = true;
+          localMouse.x = 0;
         }
-        else if (transform.originY === 'bottom') {
-          transform.originY = 'top';
-        }
-      }
-    },
 
-    /**
-     * @private
-     */
-    _setLocalMouse: function(localMouse, t) {
-      var target = t.target, zoom = this.getZoom(),
+        if (lockScalingFlip && scaleY <= 0 && scaleY < target.scaleY) {
+          forbidScalingY = true;
+          localMouse.y = 0;
+        }
+
+        if (by === "equally" && !lockScalingX && !lockScalingY) {
+          scaled = this._scaleObjectEqually(
+            localMouse,
+            target,
+            transform,
+            _dim
+          );
+        } else if (!by) {
+          forbidScalingX ||
+            lockScalingX ||
+            (target.set("scaleX", scaleX) && (scaled = scaled || changeX));
+          forbidScalingY ||
+            lockScalingY ||
+            (target.set("scaleY", scaleY) && (scaled = scaled || changeY));
+        } else if (by === "x" && !target.get("lockUniScaling")) {
+          forbidScalingX ||
+            lockScalingX ||
+            (target.set("scaleX", scaleX) && (scaled = changeX));
+        } else if (by === "y" && !target.get("lockUniScaling")) {
+          forbidScalingY ||
+            lockScalingY ||
+            (target.set("scaleY", scaleY) && (scaled = changeY));
+        }
+        forbidScalingX || forbidScalingY || this._flipObject(transform, by);
+        return scaled;
+      },
+
+      /**
+       * @private
+       * @return {Boolean} true if the scaling occurred
+       */
+      _scaleObjectEqually: function(localMouse, target, transform, _dim) {
+        var dist = localMouse.y + localMouse.x,
+          lastDist =
+            (_dim.y * transform.original.scaleY) / target.scaleY +
+            (_dim.x * transform.original.scaleX) / target.scaleX,
+          scaled,
+          signX = localMouse.x < 0 ? -1 : 1,
+          signY = localMouse.y < 0 ? -1 : 1,
+          newScaleX,
+          newScaleY;
+
+        // We use transform.scaleX/Y instead of target.scaleX/Y
+        // because the object may have a min scale and we'll loose the proportions
+        newScaleX =
+          signX * Math.abs((transform.original.scaleX * dist) / lastDist);
+        newScaleY =
+          signY * Math.abs((transform.original.scaleY * dist) / lastDist);
+        scaled = newScaleX !== target.scaleX || newScaleY !== target.scaleY;
+        target.set("scaleX", newScaleX);
+        target.set("scaleY", newScaleY);
+        return scaled;
+      },
+
+      /**
+       * @private
+       */
+      _flipObject: function(transform, by) {
+        if (transform.newScaleX < 0 && by !== "y") {
+          if (transform.originX === "left") {
+            transform.originX = "right";
+          } else if (transform.originX === "right") {
+            transform.originX = "left";
+          }
+        }
+
+        if (transform.newScaleY < 0 && by !== "x") {
+          if (transform.originY === "top") {
+            transform.originY = "bottom";
+          } else if (transform.originY === "bottom") {
+            transform.originY = "top";
+          }
+        }
+      },
+
+      /**
+       * @private
+       */
+      _setLocalMouse: function(localMouse, t) {
+        var target = t.target,
+          zoom = this.getZoom(),
           padding = target.padding / zoom;
 
-      if (t.originX === 'right') {
-        localMouse.x *= -1;
-      }
-      else if (t.originX === 'center') {
-        localMouse.x *= t.mouseXSign * 2;
-        if (localMouse.x < 0) {
-          t.mouseXSign = -t.mouseXSign;
+        if (t.originX === "right") {
+          localMouse.x *= -1;
+        } else if (t.originX === "center") {
+          localMouse.x *= t.mouseXSign * 2;
+          if (localMouse.x < 0) {
+            t.mouseXSign = -t.mouseXSign;
+          }
         }
-      }
 
-      if (t.originY === 'bottom') {
-        localMouse.y *= -1;
-      }
-      else if (t.originY === 'center') {
-        localMouse.y *= t.mouseYSign * 2;
-        if (localMouse.y < 0) {
-          t.mouseYSign = -t.mouseYSign;
+        if (t.originY === "bottom") {
+          localMouse.y *= -1;
+        } else if (t.originY === "center") {
+          localMouse.y *= t.mouseYSign * 2;
+          if (localMouse.y < 0) {
+            t.mouseYSign = -t.mouseYSign;
+          }
         }
-      }
 
-      // adjust the mouse coordinates when dealing with padding
-      if (abs(localMouse.x) > padding) {
-        if (localMouse.x < 0) {
-          localMouse.x += padding;
+        // adjust the mouse coordinates when dealing with padding
+        if (abs(localMouse.x) > padding) {
+          if (localMouse.x < 0) {
+            localMouse.x += padding;
+          } else {
+            localMouse.x -= padding;
+          }
+        } else {
+          // mouse is within the padding, set to 0
+          localMouse.x = 0;
         }
-        else {
-          localMouse.x -= padding;
+
+        if (abs(localMouse.y) > padding) {
+          if (localMouse.y < 0) {
+            localMouse.y += padding;
+          } else {
+            localMouse.y -= padding;
+          }
+        } else {
+          localMouse.y = 0;
         }
-      }
-      else { // mouse is within the padding, set to 0
-        localMouse.x = 0;
-      }
+      },
 
-      if (abs(localMouse.y) > padding) {
-        if (localMouse.y < 0) {
-          localMouse.y += padding;
+      /**
+       * Rotates object by invoking its rotate method
+       * @private
+       * @param {Number} x pointer's x coordinate
+       * @param {Number} y pointer's y coordinate
+       * @return {Boolean} true if the rotation occurred
+       */
+      _rotateObject: function(x, y) {
+        var t = this._currentTransform,
+          target = t.target,
+          constraintPosition,
+          constraintPosition = target.translateToOriginPoint(
+            target.getCenterPoint(),
+            t.originX,
+            t.originY
+          );
+
+        if (target.lockRotation) {
+          return false;
         }
-        else {
-          localMouse.y -= padding;
-        }
-      }
-      else {
-        localMouse.y = 0;
-      }
-    },
 
-    /**
-     * Rotates object by invoking its rotate method
-     * @private
-     * @param {Number} x pointer's x coordinate
-     * @param {Number} y pointer's y coordinate
-     * @return {Boolean} true if the rotation occurred
-     */
-    _rotateObject: function (x, y) {
-
-      var t = this._currentTransform,
-          target = t.target, constraintPosition,
-          constraintPosition = target.translateToOriginPoint(target.getCenterPoint(), t.originX, t.originY);
-
-      if (target.lockRotation) {
-        return false;
-      }
-
-      var lastAngle = atan2(t.ey - constraintPosition.y, t.ex - constraintPosition.x),
+        var lastAngle = atan2(
+            t.ey - constraintPosition.y,
+            t.ex - constraintPosition.x
+          ),
           curAngle = atan2(y - constraintPosition.y, x - constraintPosition.x),
           angle = radiansToDegrees(curAngle - lastAngle + t.theta),
           hasRotated = true;
 
-      if (target.snapAngle > 0) {
-        var snapAngle  = target.snapAngle,
-            snapThreshold  = target.snapThreshold || snapAngle,
+        if (target.snapAngle > 0) {
+          var snapAngle = target.snapAngle,
+            snapThreshold = target.snapThreshold || snapAngle,
             rightAngleLocked = Math.ceil(angle / snapAngle) * snapAngle,
             leftAngleLocked = Math.floor(angle / snapAngle) * snapAngle;
 
-        if (Math.abs(angle - leftAngleLocked) < snapThreshold) {
-          angle = leftAngleLocked;
+          if (Math.abs(angle - leftAngleLocked) < snapThreshold) {
+            angle = leftAngleLocked;
+          } else if (Math.abs(angle - rightAngleLocked) < snapThreshold) {
+            angle = rightAngleLocked;
+          }
         }
-        else if (Math.abs(angle - rightAngleLocked) < snapThreshold) {
-          angle = rightAngleLocked;
+
+        // normalize angle to positive value
+        if (angle < 0) {
+          angle = 360 + angle;
         }
-      }
+        angle %= 360;
 
-      // normalize angle to positive value
-      if (angle < 0) {
-        angle = 360 + angle;
-      }
-      angle %= 360;
+        if (target.angle === angle) {
+          hasRotated = false;
+        } else {
+          // rotation only happen here
+          target.angle = angle;
+          // Make sure the constraints apply
+          target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
+        }
 
-      if (target.angle === angle) {
-        hasRotated = false;
-      }
-      else {
-        // rotation only happen here
-        target.angle = angle;
-        // Make sure the constraints apply
-        target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
-      }
+        return hasRotated;
+      },
 
-      return hasRotated;
-    },
+      /**
+       * Set the cursor type of the canvas element
+       * @param {String} value Cursor type of the canvas element.
+       * @see http://www.w3.org/TR/css3-ui/#cursor
+       */
+      setCursor: function(value) {
+        this.upperCanvasEl.style.cursor = value;
+      },
 
-    /**
-     * Set the cursor type of the canvas element
-     * @param {String} value Cursor type of the canvas element.
-     * @see http://www.w3.org/TR/css3-ui/#cursor
-     */
-    setCursor: function (value) {
-      this.upperCanvasEl.style.cursor = value;
-    },
-
-    /**
-     * @private
-     * @param {CanvasRenderingContext2D} ctx to draw the selection on
-     */
-    _drawSelection: function (ctx) {
-      var groupSelector = this._groupSelector,
+      /**
+       * @private
+       * @param {CanvasRenderingContext2D} ctx to draw the selection on
+       */
+      _drawSelection: function(ctx) {
+        var groupSelector = this._groupSelector,
           left = groupSelector.left,
           top = groupSelector.top,
           aleft = abs(left),
           atop = abs(top);
 
-      if (this.selectionColor) {
-        ctx.fillStyle = this.selectionColor;
+        if (this.selectionColor) {
+          ctx.fillStyle = this.selectionColor;
 
-        ctx.fillRect(
-          groupSelector.ex - ((left > 0) ? 0 : -left),
-          groupSelector.ey - ((top > 0) ? 0 : -top),
-          aleft,
-          atop
-        );
-      }
+          ctx.fillRect(
+            groupSelector.ex - (left > 0 ? 0 : -left),
+            groupSelector.ey - (top > 0 ? 0 : -top),
+            aleft,
+            atop
+          );
+        }
 
-      if (!this.selectionLineWidth || !this.selectionBorderColor) {
-        return;
-      }
-      ctx.lineWidth = this.selectionLineWidth;
-      ctx.strokeStyle = this.selectionBorderColor;
+        if (!this.selectionLineWidth || !this.selectionBorderColor) {
+          return;
+        }
+        ctx.lineWidth = this.selectionLineWidth;
+        ctx.strokeStyle = this.selectionBorderColor;
 
-      // selection border
-      if (this.selectionDashArray.length > 1 && !supportLineDash) {
+        // selection border
+        if (this.selectionDashArray.length > 1 && !supportLineDash) {
+          var px = groupSelector.ex + STROKE_OFFSET - (left > 0 ? 0 : aleft),
+            py = groupSelector.ey + STROKE_OFFSET - (top > 0 ? 0 : atop);
 
-        var px = groupSelector.ex + STROKE_OFFSET - ((left > 0) ? 0 : aleft),
-            py = groupSelector.ey + STROKE_OFFSET - ((top > 0) ? 0 : atop);
+          ctx.beginPath();
 
-        ctx.beginPath();
+          fabric.util.drawDashedLine(
+            ctx,
+            px,
+            py,
+            px + aleft,
+            py,
+            this.selectionDashArray
+          );
+          fabric.util.drawDashedLine(
+            ctx,
+            px,
+            py + atop - 1,
+            px + aleft,
+            py + atop - 1,
+            this.selectionDashArray
+          );
+          fabric.util.drawDashedLine(
+            ctx,
+            px,
+            py,
+            px,
+            py + atop,
+            this.selectionDashArray
+          );
+          fabric.util.drawDashedLine(
+            ctx,
+            px + aleft - 1,
+            py,
+            px + aleft - 1,
+            py + atop,
+            this.selectionDashArray
+          );
 
-        fabric.util.drawDashedLine(ctx, px, py, px + aleft, py, this.selectionDashArray);
-        fabric.util.drawDashedLine(ctx, px, py + atop - 1, px + aleft, py + atop - 1, this.selectionDashArray);
-        fabric.util.drawDashedLine(ctx, px, py, px, py + atop, this.selectionDashArray);
-        fabric.util.drawDashedLine(ctx, px + aleft - 1, py, px + aleft - 1, py + atop, this.selectionDashArray);
+          ctx.closePath();
+          ctx.stroke();
+        } else {
+          fabric.Object.prototype._setLineDash.call(
+            this,
+            ctx,
+            this.selectionDashArray
+          );
+          ctx.strokeRect(
+            groupSelector.ex + STROKE_OFFSET - (left > 0 ? 0 : aleft),
+            groupSelector.ey + STROKE_OFFSET - (top > 0 ? 0 : atop),
+            aleft,
+            atop
+          );
+        }
+      },
 
-        ctx.closePath();
-        ctx.stroke();
-      }
-      else {
-        fabric.Object.prototype._setLineDash.call(this, ctx, this.selectionDashArray);
-        ctx.strokeRect(
-          groupSelector.ex + STROKE_OFFSET - ((left > 0) ? 0 : aleft),
-          groupSelector.ey + STROKE_OFFSET - ((top > 0) ? 0 : atop),
-          aleft,
-          atop
-        );
-      }
-    },
+      /**
+       * Method that determines what object we are clicking on
+       * the skipGroup parameter is for internal use, is needed for shift+click action
+       * 11/09/2018 TODO: would be cool if findTarget could discern between being a full target
+       * or the outside part of the corner.
+       * @param {Event} e mouse event
+       * @param {Boolean} skipGroup when true, activeGroup is skipped and only objects are traversed through
+       * @return {fabric.Object} the target found
+       */
+      findTarget: function(e, skipGroup) {
+        if (this.skipTargetFind) {
+          return;
+        }
 
-    /**
-     * Method that determines what object we are clicking on
-     * the skipGroup parameter is for internal use, is needed for shift+click action
-     * 11/09/2018 TODO: would be cool if findTarget could discern between being a full target
-     * or the outside part of the corner.
-     * @param {Event} e mouse event
-     * @param {Boolean} skipGroup when true, activeGroup is skipped and only objects are traversed through
-     * @return {fabric.Object} the target found
-     */
-    findTarget: function (e, skipGroup) {
-      if (this.skipTargetFind) {
-        return;
-      }
-
-      var ignoreZoom = true,
+        var ignoreZoom = true,
           pointer = this.getPointer(e, ignoreZoom),
           activeObject = this._activeObject,
           aObjects = this.getActiveObjects(),
-          activeTarget, activeTargetSubs;
+          activeTarget,
+          activeTargetSubs;
 
-      // first check current group (if one exists)
-      // active group does not check sub targets like normal groups.
-      // if active group just exits.
-      this.targets = [];
+        // first check current group (if one exists)
+        // active group does not check sub targets like normal groups.
+        // if active group just exits.
+        this.targets = [];
 
-      if (aObjects.length > 1 && !skipGroup && activeObject === this._searchPossibleTargets([activeObject], pointer)) {
-        return activeObject;
-      }
-      // if we hit the corner of an activeObject, let's return that.
-      if (aObjects.length === 1 && activeObject._findTargetCorner(pointer)) {
-        return activeObject;
-      }
-      if (aObjects.length === 1 &&
-        activeObject === this._searchPossibleTargets([activeObject], pointer)) {
-        if (!this.preserveObjectStacking) {
+        if (
+          aObjects.length > 1 &&
+          !skipGroup &&
+          activeObject === this._searchPossibleTargets([activeObject], pointer)
+        ) {
           return activeObject;
         }
-        else {
-          activeTarget = activeObject;
-          activeTargetSubs = this.targets;
-          this.targets = [];
+        // if we hit the corner of an activeObject, let's return that.
+        if (aObjects.length === 1 && activeObject._findTargetCorner(pointer)) {
+          return activeObject;
         }
-      }
-      var target = this._searchPossibleTargets(this._objects, pointer);
-      if (e[this.altSelectionKey] && target && activeTarget && target !== activeTarget) {
-        target = activeTarget;
-        this.targets = activeTargetSubs;
-      }
-      return target;
-    },
+        if (
+          aObjects.length === 1 &&
+          activeObject === this._searchPossibleTargets([activeObject], pointer)
+        ) {
+          if (!this.preserveObjectStacking) {
+            return activeObject;
+          } else {
+            activeTarget = activeObject;
+            activeTargetSubs = this.targets;
+            this.targets = [];
+          }
+        }
+        var target = this._searchPossibleTargets(this._objects, pointer);
+        if (
+          e[this.altSelectionKey] &&
+          target &&
+          activeTarget &&
+          target !== activeTarget
+        ) {
+          target = activeTarget;
+          this.targets = activeTargetSubs;
+        }
+        return target;
+      },
 
-    /**
-     * Checks point is inside the object.
-     * @param {Object} [pointer] x,y object of point coordinates we want to check.
-     * @param {fabric.Object} obj Object to test against
-     * @param {Object} [globalPointer] x,y object of point coordinates relative to canvas used to search per pixel target.
-     * @return {Boolean} true if point is contained within an area of given object
-     * @private
-     */
-    _checkTarget: function(pointer, obj, globalPointer) {
-      if (obj &&
+      /**
+       * Checks point is inside the object.
+       * @param {Object} [pointer] x,y object of point coordinates we want to check.
+       * @param {fabric.Object} obj Object to test against
+       * @param {Object} [globalPointer] x,y object of point coordinates relative to canvas used to search per pixel target.
+       * @return {Boolean} true if point is contained within an area of given object
+       * @private
+       */
+      _checkTarget: function(pointer, obj, globalPointer) {
+        if (
+          obj &&
           obj.visible &&
           obj.evented &&
-          this.containsPoint(null, obj, pointer)){
-        if ((this.perPixelTargetFind || obj.perPixelTargetFind) && !obj.isEditing) {
-          var isTransparent = this.isTargetTransparent(obj, globalPointer.x, globalPointer.y);
-          if (!isTransparent) {
+          this.containsPoint(null, obj, pointer)
+        ) {
+          if (
+            (this.perPixelTargetFind || obj.perPixelTargetFind) &&
+            !obj.isEditing
+          ) {
+            var isTransparent = this.isTargetTransparent(
+              obj,
+              globalPointer.x,
+              globalPointer.y
+            );
+            if (!isTransparent) {
+              return true;
+            }
+          } else {
             return true;
           }
         }
-        else {
-          return true;
-        }
-      }
-    },
+      },
 
-    /**
-     * Function used to search inside objects an object that contains pointer in bounding box or that contains pointerOnCanvas when painted
-     * @param {Array} [objects] objects array to look into
-     * @param {Object} [pointer] x,y object of point coordinates we want to check.
-     * @return {fabric.Object} object that contains pointer
-     * @private
-     */
-    _searchPossibleTargets: function(objects, pointer) {
-      // Cache all targets where their bounding box contains point.
-      var target, i = objects.length, subTarget;
-      // Do not check for currently grouped objects, since we check the parent group itself.
-      // until we call this function specifically to search inside the activeGroup
-      while (i--) {
-        var objToCheck = objects[i];
-        var pointerToUse = objToCheck.group && objToCheck.group.type !== 'activeSelection' ?
-          this._normalizePointer(objToCheck.group, pointer) : pointer;
-        if (this._checkTarget(pointerToUse, objToCheck, pointer)) {
-          target = objects[i];
-          if (target.subTargetCheck && target instanceof fabric.Group) {
-            subTarget = this._searchPossibleTargets(target._objects, pointer);
-            subTarget && this.targets.push(subTarget);
+      /**
+       * Function used to search inside objects an object that contains pointer in bounding box or that contains pointerOnCanvas when painted
+       * @param {Array} [objects] objects array to look into
+       * @param {Object} [pointer] x,y object of point coordinates we want to check.
+       * @return {fabric.Object} object that contains pointer
+       * @private
+       */
+      _searchPossibleTargets: function(objects, pointer) {
+        // Cache all targets where their bounding box contains point.
+        var target,
+          i = objects.length,
+          subTarget;
+        // Do not check for currently grouped objects, since we check the parent group itself.
+        // until we call this function specifically to search inside the activeGroup
+        while (i--) {
+          var objToCheck = objects[i];
+          var pointerToUse =
+            objToCheck.group && objToCheck.group.type !== "activeSelection"
+              ? this._normalizePointer(objToCheck.group, pointer)
+              : pointer;
+          if (this._checkTarget(pointerToUse, objToCheck, pointer)) {
+            target = objects[i];
+            if (target.subTargetCheck && target instanceof fabric.Group) {
+              subTarget = this._searchPossibleTargets(target._objects, pointer);
+              subTarget && this.targets.push(subTarget);
+            }
+            break;
           }
-          break;
         }
-      }
-      return target;
-    },
+        return target;
+      },
 
-    /**
-     * Returns pointer coordinates without the effect of the viewport
-     * @param {Object} pointer with "x" and "y" number values
-     * @return {Object} object with "x" and "y" number values
-     */
-    restorePointerVpt: function(pointer) {
-      return fabric.util.transformPoint(
-        pointer,
-        fabric.util.invertTransform(this.viewportTransform)
-      );
-    },
+      /**
+       * Returns pointer coordinates without the effect of the viewport
+       * @param {Object} pointer with "x" and "y" number values
+       * @return {Object} object with "x" and "y" number values
+       */
+      restorePointerVpt: function(pointer) {
+        return fabric.util.transformPoint(
+          pointer,
+          fabric.util.invertTransform(this.viewportTransform)
+        );
+      },
 
-    /**
-     * Returns pointer coordinates relative to canvas.
-     * Can return coordinates with or without viewportTransform.
-     * ignoreZoom false gives back coordinates that represent
-     * the point clicked on canvas element.
-     * ignoreZoom true gives back coordinates after being processed
-     * by the viewportTransform ( sort of coordinates of what is displayed
-     * on the canvas where you are clicking.
-     * ignoreZoom true = HTMLElement coordinates relative to top,left
-     * ignoreZoom false, default = fabric space coordinates, the same used for shape position
-     * To interact with your shapes top and left you want to use ignoreZoom true
-     * most of the time, while ignoreZoom false will give you coordinates
-     * compatible with the object.oCoords system.
-     * of the time.
-     * @param {Event} e
-     * @param {Boolean} ignoreZoom
-     * @return {Object} object with "x" and "y" number values
-     */
-    getPointer: function (e, ignoreZoom) {
-      // return cached values if we are in the event processing chain
-      if (this._absolutePointer && !ignoreZoom) {
-        return this._absolutePointer;
-      }
-      if (this._pointer && ignoreZoom) {
-        return this._pointer;
-      }
+      /**
+       * Returns pointer coordinates relative to canvas.
+       * Can return coordinates with or without viewportTransform.
+       * ignoreZoom false gives back coordinates that represent
+       * the point clicked on canvas element.
+       * ignoreZoom true gives back coordinates after being processed
+       * by the viewportTransform ( sort of coordinates of what is displayed
+       * on the canvas where you are clicking.
+       * ignoreZoom true = HTMLElement coordinates relative to top,left
+       * ignoreZoom false, default = fabric space coordinates, the same used for shape position
+       * To interact with your shapes top and left you want to use ignoreZoom true
+       * most of the time, while ignoreZoom false will give you coordinates
+       * compatible with the object.oCoords system.
+       * of the time.
+       * @param {Event} e
+       * @param {Boolean} ignoreZoom
+       * @return {Object} object with "x" and "y" number values
+       */
+      getPointer: function(e, ignoreZoom) {
+        // return cached values if we are in the event processing chain
+        if (this._absolutePointer && !ignoreZoom) {
+          return this._absolutePointer;
+        }
+        if (this._pointer && ignoreZoom) {
+          return this._pointer;
+        }
 
-      var pointer = getPointer(e),
+        var pointer = getPointer(e),
           upperCanvasEl = this.upperCanvasEl,
           bounds = upperCanvasEl.getBoundingClientRect(),
           boundsWidth = bounds.width || 0,
           boundsHeight = bounds.height || 0,
           cssScale;
 
-      if (!boundsWidth || !boundsHeight ) {
-        if ('top' in bounds && 'bottom' in bounds) {
-          boundsHeight = Math.abs( bounds.top - bounds.bottom );
+        if (!boundsWidth || !boundsHeight) {
+          if ("top" in bounds && "bottom" in bounds) {
+            boundsHeight = Math.abs(bounds.top - bounds.bottom);
+          }
+          if ("right" in bounds && "left" in bounds) {
+            boundsWidth = Math.abs(bounds.right - bounds.left);
+          }
         }
-        if ('right' in bounds && 'left' in bounds) {
-          boundsWidth = Math.abs( bounds.right - bounds.left );
+
+        this.calcOffset();
+        pointer.x = pointer.x - this._offset.left;
+        pointer.y = pointer.y - this._offset.top;
+        if (!ignoreZoom) {
+          pointer = this.restorePointerVpt(pointer);
         }
-      }
 
-      this.calcOffset();
-      pointer.x = pointer.x - this._offset.left;
-      pointer.y = pointer.y - this._offset.top;
-      if (!ignoreZoom) {
-        pointer = this.restorePointerVpt(pointer);
-      }
+        if (boundsWidth === 0 || boundsHeight === 0) {
+          // If bounds are not available (i.e. not visible), do not apply scale.
+          cssScale = { width: 1, height: 1 };
+        } else {
+          cssScale = {
+            width: upperCanvasEl.width / boundsWidth,
+            height: upperCanvasEl.height / boundsHeight
+          };
+        }
 
-      if (boundsWidth === 0 || boundsHeight === 0) {
-        // If bounds are not available (i.e. not visible), do not apply scale.
-        cssScale = { width: 1, height: 1 };
-      }
-      else {
-        cssScale = {
-          width: upperCanvasEl.width / boundsWidth,
-          height: upperCanvasEl.height / boundsHeight
+        return {
+          x: pointer.x * cssScale.width,
+          y: pointer.y * cssScale.height
         };
-      }
+      },
 
-      return {
-        x: pointer.x * cssScale.width,
-        y: pointer.y * cssScale.height
-      };
-    },
+      /**
+       * @private
+       * @throws {CANVAS_INIT_ERROR} If canvas can not be initialized
+       */
+      _createUpperCanvas: function() {
+        var lowerCanvasClass = this.lowerCanvasEl.className.replace(
+          /\s*lower-canvas\s*/,
+          ""
+        );
 
-    /**
-     * @private
-     * @throws {CANVAS_INIT_ERROR} If canvas can not be initialized
-     */
-    _createUpperCanvas: function () {
-      var lowerCanvasClass = this.lowerCanvasEl.className.replace(/\s*lower-canvas\s*/, '');
+        // there is no need to create a new upperCanvas element if we have already one.
+        if (this.upperCanvasEl) {
+          this.upperCanvasEl.className = "";
+        } else {
+          this.upperCanvasEl = this._createCanvasElement();
+        }
+        fabric.util.addClass(
+          this.upperCanvasEl,
+          "upper-canvas " + lowerCanvasClass
+        );
 
-      // there is no need to create a new upperCanvas element if we have already one.
-      if (this.upperCanvasEl) {
-        this.upperCanvasEl.className = '';
-      }
-      else {
-        this.upperCanvasEl = this._createCanvasElement();
-      }
-      fabric.util.addClass(this.upperCanvasEl, 'upper-canvas ' + lowerCanvasClass);
+        this.wrapperEl.appendChild(this.upperCanvasEl);
 
-      this.wrapperEl.appendChild(this.upperCanvasEl);
+        this._copyCanvasStyle(this.lowerCanvasEl, this.upperCanvasEl);
+        this._applyCanvasStyle(this.upperCanvasEl);
+        this.contextTop = this.upperCanvasEl.getContext("2d");
+      },
 
-      this._copyCanvasStyle(this.lowerCanvasEl, this.upperCanvasEl);
-      this._applyCanvasStyle(this.upperCanvasEl);
-      this.contextTop = this.upperCanvasEl.getContext('2d');
-    },
+      /**
+       * @private
+       */
+      _createCacheCanvas: function() {
+        this.cacheCanvasEl = this._createCanvasElement();
+        this.cacheCanvasEl.setAttribute("width", this.width);
+        this.cacheCanvasEl.setAttribute("height", this.height);
+        this.contextCache = this.cacheCanvasEl.getContext("2d");
+      },
 
-    /**
-     * @private
-     */
-    _createCacheCanvas: function () {
-      this.cacheCanvasEl = this._createCanvasElement();
-      this.cacheCanvasEl.setAttribute('width', this.width);
-      this.cacheCanvasEl.setAttribute('height', this.height);
-      this.contextCache = this.cacheCanvasEl.getContext('2d');
-    },
+      /**
+       * @private
+       */
+      _initWrapperElement: function() {
+        this.wrapperEl = fabric.util.wrapElement(this.lowerCanvasEl, "div", {
+          class: this.containerClass
+        });
+        fabric.util.setStyle(this.wrapperEl, {
+          width: this.width + "px",
+          height: this.height + "px",
+          position: "relative"
+        });
+        fabric.util.makeElementUnselectable(this.wrapperEl);
+      },
 
-    /**
-     * @private
-     */
-    _initWrapperElement: function () {
-      this.wrapperEl = fabric.util.wrapElement(this.lowerCanvasEl, 'div', {
-        'class': this.containerClass
-      });
-      fabric.util.setStyle(this.wrapperEl, {
-        width: this.width + 'px',
-        height: this.height + 'px',
-        position: 'relative'
-      });
-      fabric.util.makeElementUnselectable(this.wrapperEl);
-    },
-
-    /**
-     * @private
-     * @param {HTMLElement} element canvas element to apply styles on
-     */
-    _applyCanvasStyle: function (element) {
-      var width = this.width || element.width,
+      /**
+       * @private
+       * @param {HTMLElement} element canvas element to apply styles on
+       */
+      _applyCanvasStyle: function(element) {
+        var width = this.width || element.width,
           height = this.height || element.height;
 
-      fabric.util.setStyle(element, {
-        position: 'absolute',
-        width: width + 'px',
-        height: height + 'px',
-        left: 0,
-        top: 0,
-        'touch-action': this.allowTouchScrolling ? 'manipulation' : 'none'
-      });
-      element.width = width;
-      element.height = height;
-      fabric.util.makeElementUnselectable(element);
-    },
+        fabric.util.setStyle(element, {
+          position: "absolute",
+          width: width + "px",
+          height: height + "px",
+          left: 0,
+          top: 0,
+          "touch-action": this.allowTouchScrolling ? "manipulation" : "none"
+        });
+        element.width = width;
+        element.height = height;
+        fabric.util.makeElementUnselectable(element);
+      },
 
-    /**
-     * Copy the entire inline style from one element (fromEl) to another (toEl)
-     * @private
-     * @param {Element} fromEl Element style is copied from
-     * @param {Element} toEl Element copied style is applied to
-     */
-    _copyCanvasStyle: function (fromEl, toEl) {
-      toEl.style.cssText = fromEl.style.cssText;
-    },
+      /**
+       * Copy the entire inline style from one element (fromEl) to another (toEl)
+       * @private
+       * @param {Element} fromEl Element style is copied from
+       * @param {Element} toEl Element copied style is applied to
+       */
+      _copyCanvasStyle: function(fromEl, toEl) {
+        toEl.style.cssText = fromEl.style.cssText;
+      },
 
-    /**
-     * Returns context of canvas where object selection is drawn
-     * @return {CanvasRenderingContext2D}
-     */
-    getSelectionContext: function() {
-      return this.contextTop;
-    },
+      /**
+       * Returns context of canvas where object selection is drawn
+       * @return {CanvasRenderingContext2D}
+       */
+      getSelectionContext: function() {
+        return this.contextTop;
+      },
 
-    /**
-     * Returns &lt;canvas> element on which object selection is drawn
-     * @return {HTMLCanvasElement}
-     */
-    getSelectionElement: function () {
-      return this.upperCanvasEl;
-    },
+      /**
+       * Returns &lt;canvas> element on which object selection is drawn
+       * @return {HTMLCanvasElement}
+       */
+      getSelectionElement: function() {
+        return this.upperCanvasEl;
+      },
 
-    /**
-     * Returns currently active object
-     * @return {fabric.Object} active object
-     */
-    getActiveObject: function () {
-      return this._activeObject;
-    },
+      /**
+       * Returns currently active object
+       * @return {fabric.Object} active object
+       */
+      getActiveObject: function() {
+        return this._activeObject;
+      },
 
-    /**
-     * Returns an array with the current selected objects
-     * @return {fabric.Object} active object
-     */
-    getActiveObjects: function () {
-      var active = this._activeObject;
-      if (active) {
-        if (active.type === 'activeSelection' && active._objects) {
-          return active._objects.slice(0);
+      /**
+       * Returns an array with the current selected objects
+       * @return {fabric.Object} active object
+       */
+      getActiveObjects: function() {
+        var active = this._activeObject;
+        if (active) {
+          if (active.type === "activeSelection" && active._objects) {
+            return active._objects.slice(0);
+          } else {
+            return [active];
+          }
         }
-        else {
-          return [active];
+        return [];
+      },
+
+      /**
+       * @private
+       * @param {fabric.Object} obj Object that was removed
+       */
+      _onObjectRemoved: function(obj) {
+        // removing active object should fire "selection:cleared" events
+        if (obj === this._activeObject) {
+          this.fire("before:selection:cleared", { target: obj });
+          this._discardActiveObject();
+          this.fire("selection:cleared", { target: obj });
+          obj.fire("deselected");
         }
-      }
-      return [];
-    },
-
-    /**
-     * @private
-     * @param {fabric.Object} obj Object that was removed
-     */
-    _onObjectRemoved: function(obj) {
-      // removing active object should fire "selection:cleared" events
-      if (obj === this._activeObject) {
-        this.fire('before:selection:cleared', { target: obj });
-        this._discardActiveObject();
-        this.fire('selection:cleared', { target: obj });
-        obj.fire('deselected');
-      }
-      if (this._hoveredTarget === obj) {
-        this._hoveredTarget = null;
-      }
-      this.callSuper('_onObjectRemoved', obj);
-    },
-
-    /**
-     * @private
-     * Compares the old activeObject with the current one and fires correct events
-     * @param {fabric.Object} obj old activeObject
-     */
-    _fireSelectionEvents: function(oldObjects, e) {
-      var somethingChanged = false, objects = this.getActiveObjects(),
-          added = [], removed = [], opt = { e: e };
-      oldObjects.forEach(function(oldObject) {
-        if (objects.indexOf(oldObject) === -1) {
-          somethingChanged = true;
-          oldObject.fire('deselected', opt);
-          removed.push(oldObject);
+        if (this._hoveredTarget === obj) {
+          this._hoveredTarget = null;
         }
-      });
-      objects.forEach(function(object) {
-        if (oldObjects.indexOf(object) === -1) {
-          somethingChanged = true;
-          object.fire('selected', opt);
-          added.push(object);
+        this.callSuper("_onObjectRemoved", obj);
+      },
+
+      /**
+       * @private
+       * Compares the old activeObject with the current one and fires correct events
+       * @param {fabric.Object} obj old activeObject
+       */
+      _fireSelectionEvents: function(oldObjects, e) {
+        var somethingChanged = false,
+          objects = this.getActiveObjects(),
+          added = [],
+          removed = [],
+          opt = { e: e };
+        oldObjects.forEach(function(oldObject) {
+          if (objects.indexOf(oldObject) === -1) {
+            somethingChanged = true;
+            oldObject.fire("deselected", opt);
+            removed.push(oldObject);
+          }
+        });
+        objects.forEach(function(object) {
+          if (oldObjects.indexOf(object) === -1) {
+            somethingChanged = true;
+            object.fire("selected", opt);
+            added.push(object);
+          }
+        });
+        if (oldObjects.length > 0 && objects.length > 0) {
+          opt.selected = added;
+          opt.deselected = removed;
+          // added for backward compatibility
+          opt.updated = added[0] || removed[0];
+          opt.target = this._activeObject;
+          somethingChanged && this.fire("selection:updated", opt);
+        } else if (objects.length > 0) {
+          // deprecated event
+          if (objects.length === 1) {
+            opt.target = added[0];
+            this.fire("object:selected", opt);
+          }
+          opt.selected = added;
+          // added for backward compatibility
+          opt.target = this._activeObject;
+          this.fire("selection:created", opt);
+        } else if (oldObjects.length > 0) {
+          opt.deselected = removed;
+          this.fire("selection:cleared", opt);
         }
-      });
-      if (oldObjects.length > 0 && objects.length > 0) {
-        opt.selected = added;
-        opt.deselected = removed;
-        // added for backward compatibility
-        opt.updated = added[0] || removed[0];
-        opt.target = this._activeObject;
-        somethingChanged && this.fire('selection:updated', opt);
-      }
-      else if (objects.length > 0) {
-        // deprecated event
-        if (objects.length === 1) {
-          opt.target = added[0];
-          this.fire('object:selected', opt);
-        }
-        opt.selected = added;
-        // added for backward compatibility
-        opt.target = this._activeObject;
-        this.fire('selection:created', opt);
-      }
-      else if (oldObjects.length > 0) {
-        opt.deselected = removed;
-        this.fire('selection:cleared', opt);
-      }
-    },
+      },
 
-    /**
-     * Sets given object as the only active object on canvas
-     * @param {fabric.Object} object Object to set as an active one
-     * @param {Event} [e] Event (passed along when firing "object:selected")
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    setActiveObject: function (object, e) {
-      var currentActives = this.getActiveObjects();
-      this._setActiveObject(object, e);
-      this._fireSelectionEvents(currentActives, e);
-      return this;
-    },
+      /**
+       * Sets given object as the only active object on canvas
+       * @param {fabric.Object} object Object to set as an active one
+       * @param {Event} [e] Event (passed along when firing "object:selected")
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      setActiveObject: function(object, e) {
+        var currentActives = this.getActiveObjects();
+        this._setActiveObject(object, e);
+        this._fireSelectionEvents(currentActives, e);
+        return this;
+      },
 
-    /**
-     * @private
-     * @param {Object} object to set as active
-     * @param {Event} [e] Event (passed along when firing "object:selected")
-     * @return {Boolean} true if the selection happened
-     */
-    _setActiveObject: function(object, e) {
-      if (this._activeObject === object) {
-        return false;
-      }
-      if (!this._discardActiveObject(e, object)) {
-        return false;
-      }
-      if (object.onSelect({ e: e })) {
-        return false;
-      }
-      this._activeObject = object;
-      return true;
-    },
-
-    /**
-     * @private
-     */
-    _discardActiveObject: function(e, object) {
-      var obj = this._activeObject;
-      if (obj) {
-        // onDeselect return TRUE to cancel selection;
-        if (obj.onDeselect({ e: e, object: object })) {
+      /**
+       * @private
+       * @param {Object} object to set as active
+       * @param {Event} [e] Event (passed along when firing "object:selected")
+       * @return {Boolean} true if the selection happened
+       */
+      _setActiveObject: function(object, e) {
+        if (this._activeObject === object) {
           return false;
         }
-        this._activeObject = null;
+        if (!this._discardActiveObject(e, object)) {
+          return false;
+        }
+        if (object.onSelect({ e: e })) {
+          return false;
+        }
+        this._activeObject = object;
+        return true;
+      },
+
+      /**
+       * @private
+       */
+      _discardActiveObject: function(e, object) {
+        var obj = this._activeObject;
+        if (obj) {
+          // onDeselect return TRUE to cancel selection;
+          if (obj.onDeselect({ e: e, object: object })) {
+            return false;
+          }
+          this._activeObject = null;
+        }
+        return true;
+      },
+
+      /**
+       * Discards currently active object and fire events. If the function is called by fabric
+       * as a consequence of a mouse event, the event is passed as a parameter and
+       * sent to the fire function for the custom events. When used as a method the
+       * e param does not have any application.
+       * @param {event} e
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      discardActiveObject: function(e) {
+        var currentActives = this.getActiveObjects();
+        if (currentActives.length) {
+          this.fire("before:selection:cleared", {
+            target: currentActives[0],
+            e: e
+          });
+        }
+        this._discardActiveObject(e);
+        this._fireSelectionEvents(currentActives, e);
+        return this;
+      },
+
+      /**
+       * Clears a canvas element and removes all event listeners
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      dispose: function() {
+        var wrapper = this.wrapperEl;
+        this.removeListeners();
+        wrapper.removeChild(this.upperCanvasEl);
+        wrapper.removeChild(this.lowerCanvasEl);
+        this.contextCache = null;
+        this.contextTop = null;
+        ["upperCanvasEl", "cacheCanvasEl"].forEach(
+          function(element) {
+            fabric.util.cleanUpJsdomNode(this[element]);
+            this[element] = undefined;
+          }.bind(this)
+        );
+        if (wrapper.parentNode) {
+          wrapper.parentNode.replaceChild(this.lowerCanvasEl, this.wrapperEl);
+        }
+        delete this.wrapperEl;
+        fabric.StaticCanvas.prototype.dispose.call(this);
+        return this;
+      },
+
+      /**
+       * Clears all contexts (background, main, top) of an instance
+       * @return {fabric.Canvas} thisArg
+       * @chainable
+       */
+      clear: function() {
+        // this.discardActiveGroup();
+        this.discardActiveObject();
+        this.clearContext(this.contextTop);
+        return this.callSuper("clear");
+      },
+
+      /**
+       * Draws objects' controls (borders/controls)
+       * @param {CanvasRenderingContext2D} ctx Context to render controls on
+       */
+      drawControls: function(ctx) {
+        var activeObject = this._activeObject;
+
+        if (activeObject) {
+          activeObject._renderControls(ctx);
+        }
+      },
+
+      /**
+       * @private
+       */
+      _toObject: function(instance, methodName, propertiesToInclude) {
+        //If the object is part of the current selection group, it should
+        //be transformed appropriately
+        //i.e. it should be serialised as it would appear if the selection group
+        //were to be destroyed.
+        var originalProperties = this._realizeGroupTransformOnObject(instance),
+          object = this.callSuper(
+            "_toObject",
+            instance,
+            methodName,
+            propertiesToInclude
+          );
+        //Undo the damage we did by changing all of its properties
+        this._unwindGroupTransformOnObject(instance, originalProperties);
+        return object;
+      },
+
+      /**
+       * Realises an object's group transformation on it
+       * @private
+       * @param {fabric.Object} [instance] the object to transform (gets mutated)
+       * @returns the original values of instance which were changed
+       */
+      _realizeGroupTransformOnObject: function(instance) {
+        if (
+          instance.group &&
+          instance.group.type === "activeSelection" &&
+          this._activeObject === instance.group
+        ) {
+          var layoutProps = [
+            "angle",
+            "flipX",
+            "flipY",
+            "left",
+            "scaleX",
+            "scaleY",
+            "skewX",
+            "skewY",
+            "top"
+          ];
+          //Copy all the positionally relevant properties across now
+          var originalValues = {};
+          layoutProps.forEach(function(prop) {
+            originalValues[prop] = instance[prop];
+          });
+          this._activeObject.realizeTransform(instance);
+          return originalValues;
+        } else {
+          return null;
+        }
+      },
+
+      /**
+       * Restores the changed properties of instance
+       * @private
+       * @param {fabric.Object} [instance] the object to un-transform (gets mutated)
+       * @param {Object} [originalValues] the original values of instance, as returned by _realizeGroupTransformOnObject
+       */
+      _unwindGroupTransformOnObject: function(instance, originalValues) {
+        if (originalValues) {
+          instance.set(originalValues);
+        }
+      },
+
+      /**
+       * @private
+       */
+      _setSVGObject: function(markup, instance, reviver) {
+        //If the object is in a selection group, simulate what would happen to that
+        //object when the group is deselected
+        var originalProperties = this._realizeGroupTransformOnObject(instance);
+        this.callSuper("_setSVGObject", markup, instance, reviver);
+        this._unwindGroupTransformOnObject(instance, originalProperties);
+      },
+
+      setViewportTransform: function(vpt) {
+        if (
+          this.renderOnAddRemove &&
+          this._activeObject &&
+          this._activeObject.isEditing
+        ) {
+          this._activeObject.clearContextTop();
+        }
+        fabric.StaticCanvas.prototype.setViewportTransform.call(this, vpt);
       }
-      return true;
-    },
-
-    /**
-     * Discards currently active object and fire events. If the function is called by fabric
-     * as a consequence of a mouse event, the event is passed as a parameter and
-     * sent to the fire function for the custom events. When used as a method the
-     * e param does not have any application.
-     * @param {event} e
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    discardActiveObject: function (e) {
-      var currentActives = this.getActiveObjects();
-      if (currentActives.length) {
-        this.fire('before:selection:cleared', { target: currentActives[0], e: e });
-      }
-      this._discardActiveObject(e);
-      this._fireSelectionEvents(currentActives, e);
-      return this;
-    },
-
-    /**
-     * Clears a canvas element and removes all event listeners
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    dispose: function () {
-      var wrapper = this.wrapperEl;
-      this.removeListeners();
-      wrapper.removeChild(this.upperCanvasEl);
-      wrapper.removeChild(this.lowerCanvasEl);
-      this.contextCache = null;
-      this.contextTop = null;
-      ['upperCanvasEl', 'cacheCanvasEl'].forEach((function(element) {
-        fabric.util.cleanUpJsdomNode(this[element]);
-        this[element] = undefined;
-      }).bind(this));
-      if (wrapper.parentNode) {
-        wrapper.parentNode.replaceChild(this.lowerCanvasEl, this.wrapperEl);
-      }
-      delete this.wrapperEl;
-      fabric.StaticCanvas.prototype.dispose.call(this);
-      return this;
-    },
-
-    /**
-     * Clears all contexts (background, main, top) of an instance
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    clear: function () {
-      // this.discardActiveGroup();
-      this.discardActiveObject();
-      this.clearContext(this.contextTop);
-      return this.callSuper('clear');
-    },
-
-    /**
-     * Draws objects' controls (borders/controls)
-     * @param {CanvasRenderingContext2D} ctx Context to render controls on
-     */
-    drawControls: function(ctx) {
-      var activeObject = this._activeObject;
-
-      if (activeObject) {
-        activeObject._renderControls(ctx);
-      }
-    },
-
-    /**
-     * @private
-     */
-    _toObject: function(instance, methodName, propertiesToInclude) {
-      //If the object is part of the current selection group, it should
-      //be transformed appropriately
-      //i.e. it should be serialised as it would appear if the selection group
-      //were to be destroyed.
-      var originalProperties = this._realizeGroupTransformOnObject(instance),
-          object = this.callSuper('_toObject', instance, methodName, propertiesToInclude);
-      //Undo the damage we did by changing all of its properties
-      this._unwindGroupTransformOnObject(instance, originalProperties);
-      return object;
-    },
-
-    /**
-     * Realises an object's group transformation on it
-     * @private
-     * @param {fabric.Object} [instance] the object to transform (gets mutated)
-     * @returns the original values of instance which were changed
-     */
-    _realizeGroupTransformOnObject: function(instance) {
-      if (instance.group && instance.group.type === 'activeSelection' && this._activeObject === instance.group) {
-        var layoutProps = ['angle', 'flipX', 'flipY', 'left', 'scaleX', 'scaleY', 'skewX', 'skewY', 'top'];
-        //Copy all the positionally relevant properties across now
-        var originalValues = {};
-        layoutProps.forEach(function(prop) {
-          originalValues[prop] = instance[prop];
-        });
-        this._activeObject.realizeTransform(instance);
-        return originalValues;
-      }
-      else {
-        return null;
-      }
-    },
-
-    /**
-     * Restores the changed properties of instance
-     * @private
-     * @param {fabric.Object} [instance] the object to un-transform (gets mutated)
-     * @param {Object} [originalValues] the original values of instance, as returned by _realizeGroupTransformOnObject
-     */
-    _unwindGroupTransformOnObject: function(instance, originalValues) {
-      if (originalValues) {
-        instance.set(originalValues);
-      }
-    },
-
-    /**
-     * @private
-     */
-    _setSVGObject: function(markup, instance, reviver) {
-      //If the object is in a selection group, simulate what would happen to that
-      //object when the group is deselected
-      var originalProperties = this._realizeGroupTransformOnObject(instance);
-      this.callSuper('_setSVGObject', markup, instance, reviver);
-      this._unwindGroupTransformOnObject(instance, originalProperties);
-    },
-
-    setViewportTransform: function (vpt) {
-      if (this.renderOnAddRemove && this._activeObject && this._activeObject.isEditing) {
-        this._activeObject.clearContextTop();
-      }
-      fabric.StaticCanvas.prototype.setViewportTransform.call(this, vpt);
     }
-  });
+  );
 
   // copying static properties manually to work around Opera's bug,
   // where "prototype" property is enumerable and overrides existing prototype
   for (var prop in fabric.StaticCanvas) {
-    if (prop !== 'prototype') {
+    if (prop !== "prototype") {
       fabric.Canvas[prop] = fabric.StaticCanvas[prop];
     }
   }
 
   if (fabric.isTouchSupported) {
     /** @ignore */
-    fabric.Canvas.prototype._setCursorFromEvent = function() { };
+    fabric.Canvas.prototype._setCursorFromEvent = function() {};
   }
 })();
 
 
 (function() {
-
   var cursorOffset = {
-        mt: 0, // n
-        tr: 1, // ne
-        mr: 2, // e
-        br: 3, // se
-        mb: 4, // s
-        bl: 5, // sw
-        ml: 6, // w
-        tl: 7 // nw
-      },
-      addListener = fabric.util.addListener,
-      removeListener = fabric.util.removeListener,
-      RIGHT_CLICK = 3, MIDDLE_CLICK = 2, LEFT_CLICK = 1,
-      addEventOptions = { passive: false };
+      mt: 0, // n
+      tr: 1, // ne
+      mr: 2, // e
+      br: 3, // se
+      mb: 4, // s
+      bl: 5, // sw
+      ml: 6, // w
+      tl: 7 // nw
+    },
+    addListener = fabric.util.addListener,
+    removeListener = fabric.util.removeListener,
+    RIGHT_CLICK = 3,
+    MIDDLE_CLICK = 2,
+    LEFT_CLICK = 1,
+    addEventOptions = { passive: false };
 
   function checkClick(e, value) {
-    return 'which' in e ? e.which === value : e.button === value - 1;
+    return "which" in e ? e.which === value : e.button === value - 1;
   }
 
-  fabric.util.object.extend(fabric.Canvas.prototype, /** @lends fabric.Canvas.prototype */ {
+  fabric.util.object.extend(
+    fabric.Canvas.prototype,
+    /** @lends fabric.Canvas.prototype */ {
+      /**
+       * Map of cursor style values for each of the object controls
+       * @private
+       */
+      cursorMap: [
+        "n-resize",
+        "ne-resize",
+        "e-resize",
+        "se-resize",
+        "s-resize",
+        "sw-resize",
+        "w-resize",
+        "nw-resize"
+      ],
 
-    /**
-     * Map of cursor style values for each of the object controls
-     * @private
-     */
-    cursorMap: [
-      'n-resize',
-      'ne-resize',
-      'e-resize',
-      'se-resize',
-      's-resize',
-      'sw-resize',
-      'w-resize',
-      'nw-resize'
-    ],
+      /**
+       * Adds mouse listeners to canvas
+       * @private
+       */
+      _initEventListeners: function() {
+        // in case we initialized the class twice. This should not happen normally
+        // but in some kind of applications where the canvas element may be changed
+        // this is a workaround to having double listeners.
+        this.removeListeners();
+        this._bindEvents();
+        this.addOrRemove(addListener, "add");
+      },
 
-    /**
-     * Adds mouse listeners to canvas
-     * @private
-     */
-    _initEventListeners: function () {
-      // in case we initialized the class twice. This should not happen normally
-      // but in some kind of applications where the canvas element may be changed
-      // this is a workaround to having double listeners.
-      this.removeListeners();
-      this._bindEvents();
-      this.addOrRemove(addListener, 'add');
-    },
+      addOrRemove: function(functor, eventjsFunctor) {
+        functor(fabric.window, "resize", this._onResize);
+        functor(this.upperCanvasEl, "mousedown", this._onMouseDown);
+        functor(
+          this.upperCanvasEl,
+          "mousemove",
+          this._onMouseMove,
+          addEventOptions
+        );
+        functor(this.upperCanvasEl, "mouseout", this._onMouseOut);
+        functor(this.upperCanvasEl, "mouseenter", this._onMouseEnter);
+        functor(this.upperCanvasEl, "wheel", this._onMouseWheel);
+        functor(this.upperCanvasEl, "contextmenu", this._onContextMenu);
+        functor(this.upperCanvasEl, "dblclick", this._onDoubleClick);
+        functor(
+          this.upperCanvasEl,
+          "touchstart",
+          this._onMouseDown,
+          addEventOptions
+        );
+        functor(
+          this.upperCanvasEl,
+          "touchmove",
+          this._onMouseMove,
+          addEventOptions
+        );
+        functor(this.upperCanvasEl, "dragover", this._onDragOver);
+        functor(this.upperCanvasEl, "dragenter", this._onDragEnter);
+        functor(this.upperCanvasEl, "dragleave", this._onDragLeave);
+        functor(this.upperCanvasEl, "drop", this._onDrop);
+        if (typeof eventjs !== "undefined" && eventjsFunctor in eventjs) {
+          eventjs[eventjsFunctor](
+            this.upperCanvasEl,
+            "gesture",
+            this._onGesture
+          );
+          eventjs[eventjsFunctor](this.upperCanvasEl, "drag", this._onDrag);
+          eventjs[eventjsFunctor](
+            this.upperCanvasEl,
+            "orientation",
+            this._onOrientationChange
+          );
+          eventjs[eventjsFunctor](this.upperCanvasEl, "shake", this._onShake);
+          eventjs[eventjsFunctor](
+            this.upperCanvasEl,
+            "longpress",
+            this._onLongPress
+          );
+        }
+      },
 
-    addOrRemove: function(functor, eventjsFunctor) {
-      functor(fabric.window, 'resize', this._onResize);
-      functor(this.upperCanvasEl, 'mousedown', this._onMouseDown);
-      functor(this.upperCanvasEl, 'mousemove', this._onMouseMove, addEventOptions);
-      functor(this.upperCanvasEl, 'mouseout', this._onMouseOut);
-      functor(this.upperCanvasEl, 'mouseenter', this._onMouseEnter);
-      functor(this.upperCanvasEl, 'wheel', this._onMouseWheel);
-      functor(this.upperCanvasEl, 'contextmenu', this._onContextMenu);
-      functor(this.upperCanvasEl, 'dblclick', this._onDoubleClick);
-      functor(this.upperCanvasEl, 'touchstart', this._onMouseDown, addEventOptions);
-      functor(this.upperCanvasEl, 'touchmove', this._onMouseMove, addEventOptions);
-      functor(this.upperCanvasEl, 'dragover', this._onDragOver);
-      functor(this.upperCanvasEl, 'dragenter', this._onDragEnter);
-      functor(this.upperCanvasEl, 'dragleave', this._onDragLeave);
-      functor(this.upperCanvasEl, 'drop', this._onDrop);
-      if (typeof eventjs !== 'undefined' && eventjsFunctor in eventjs) {
-        eventjs[eventjsFunctor](this.upperCanvasEl, 'gesture', this._onGesture);
-        eventjs[eventjsFunctor](this.upperCanvasEl, 'drag', this._onDrag);
-        eventjs[eventjsFunctor](this.upperCanvasEl, 'orientation', this._onOrientationChange);
-        eventjs[eventjsFunctor](this.upperCanvasEl, 'shake', this._onShake);
-        eventjs[eventjsFunctor](this.upperCanvasEl, 'longpress', this._onLongPress);
-      }
-    },
+      /**
+       * Removes all event listeners
+       */
+      removeListeners: function() {
+        this.addOrRemove(removeListener, "remove");
+        // if you dispose on a mouseDown, before mouse up, you need to clean document to...
+        removeListener(fabric.document, "mouseup", this._onMouseUp);
+        removeListener(
+          fabric.document,
+          "touchend",
+          this._onMouseUp,
+          addEventOptions
+        );
+        removeListener(
+          fabric.document,
+          "mousemove",
+          this._onMouseMove,
+          addEventOptions
+        );
+        removeListener(
+          fabric.document,
+          "touchmove",
+          this._onMouseMove,
+          addEventOptions
+        );
+      },
 
-    /**
-     * Removes all event listeners
-     */
-    removeListeners: function() {
-      this.addOrRemove(removeListener, 'remove');
-      // if you dispose on a mouseDown, before mouse up, you need to clean document to...
-      removeListener(fabric.document, 'mouseup', this._onMouseUp);
-      removeListener(fabric.document, 'touchend', this._onMouseUp, addEventOptions);
-      removeListener(fabric.document, 'mousemove', this._onMouseMove, addEventOptions);
-      removeListener(fabric.document, 'touchmove', this._onMouseMove, addEventOptions);
-    },
+      /**
+       * @private
+       */
+      _bindEvents: function() {
+        if (this.eventsBound) {
+          // for any reason we pass here twice we do not want to bind events twice.
+          return;
+        }
+        this._onMouseDown = this._onMouseDown.bind(this);
+        this._onMouseMove = this._onMouseMove.bind(this);
+        this._onMouseUp = this._onMouseUp.bind(this);
+        this._onResize = this._onResize.bind(this);
+        this._onGesture = this._onGesture.bind(this);
+        this._onDrag = this._onDrag.bind(this);
+        this._onShake = this._onShake.bind(this);
+        this._onLongPress = this._onLongPress.bind(this);
+        this._onOrientationChange = this._onOrientationChange.bind(this);
+        this._onMouseWheel = this._onMouseWheel.bind(this);
+        this._onMouseOut = this._onMouseOut.bind(this);
+        this._onMouseEnter = this._onMouseEnter.bind(this);
+        this._onContextMenu = this._onContextMenu.bind(this);
+        this._onDoubleClick = this._onDoubleClick.bind(this);
+        this._onDragOver = this._onDragOver.bind(this);
+        this._onDragEnter = this._simpleEventHandler.bind(this, "dragenter");
+        this._onDragLeave = this._simpleEventHandler.bind(this, "dragleave");
+        this._onDrop = this._simpleEventHandler.bind(this, "drop");
+        this.eventsBound = true;
+      },
 
-    /**
-     * @private
-     */
-    _bindEvents: function() {
-      if (this.eventsBound) {
-        // for any reason we pass here twice we do not want to bind events twice.
-        return;
-      }
-      this._onMouseDown = this._onMouseDown.bind(this);
-      this._onMouseMove = this._onMouseMove.bind(this);
-      this._onMouseUp = this._onMouseUp.bind(this);
-      this._onResize = this._onResize.bind(this);
-      this._onGesture = this._onGesture.bind(this);
-      this._onDrag = this._onDrag.bind(this);
-      this._onShake = this._onShake.bind(this);
-      this._onLongPress = this._onLongPress.bind(this);
-      this._onOrientationChange = this._onOrientationChange.bind(this);
-      this._onMouseWheel = this._onMouseWheel.bind(this);
-      this._onMouseOut = this._onMouseOut.bind(this);
-      this._onMouseEnter = this._onMouseEnter.bind(this);
-      this._onContextMenu = this._onContextMenu.bind(this);
-      this._onDoubleClick = this._onDoubleClick.bind(this);
-      this._onDragOver = this._onDragOver.bind(this);
-      this._onDragEnter = this._simpleEventHandler.bind(this, 'dragenter');
-      this._onDragLeave = this._simpleEventHandler.bind(this, 'dragleave');
-      this._onDrop = this._simpleEventHandler.bind(this, 'drop');
-      this.eventsBound = true;
-    },
+      /**
+       * @private
+       * @param {Event} [e] Event object fired on Event.js gesture
+       * @param {Event} [self] Inner Event object
+       */
+      _onGesture: function(e, self) {
+        this.__onTransformGesture && this.__onTransformGesture(e, self);
+      },
 
-    /**
-     * @private
-     * @param {Event} [e] Event object fired on Event.js gesture
-     * @param {Event} [self] Inner Event object
-     */
-    _onGesture: function(e, self) {
-      this.__onTransformGesture && this.__onTransformGesture(e, self);
-    },
+      /**
+       * @private
+       * @param {Event} [e] Event object fired on Event.js drag
+       * @param {Event} [self] Inner Event object
+       */
+      _onDrag: function(e, self) {
+        this.__onDrag && this.__onDrag(e, self);
+      },
 
-    /**
-     * @private
-     * @param {Event} [e] Event object fired on Event.js drag
-     * @param {Event} [self] Inner Event object
-     */
-    _onDrag: function(e, self) {
-      this.__onDrag && this.__onDrag(e, self);
-    },
+      /**
+       * @private
+       * @param {Event} [e] Event object fired on wheel event
+       */
+      _onMouseWheel: function(e) {
+        this.__onMouseWheel(e);
+      },
 
-    /**
-     * @private
-     * @param {Event} [e] Event object fired on wheel event
-     */
-    _onMouseWheel: function(e) {
-      this.__onMouseWheel(e);
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousedown
-     */
-    _onMouseOut: function(e) {
-      var target = this._hoveredTarget;
-      this.fire('mouse:out', { target: target, e: e });
-      this._hoveredTarget = null;
-      target && target.fire('mouseout', { e: e });
-      if (this._iTextInstances) {
-        this._iTextInstances.forEach(function(obj) {
-          if (obj.isEditing) {
-            obj.hiddenTextarea.focus();
-          }
-        });
-      }
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object fired on mouseenter
-     */
-    _onMouseEnter: function(e) {
-      if (!this.findTarget(e)) {
-        this.fire('mouse:over', { target: null, e: e });
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousedown
+       */
+      _onMouseOut: function(e) {
+        var target = this._hoveredTarget;
+        this.fire("mouse:out", { target: target, e: e });
         this._hoveredTarget = null;
-      }
-    },
+        target && target.fire("mouseout", { e: e });
+        if (this._iTextInstances) {
+          this._iTextInstances.forEach(function(obj) {
+            if (obj.isEditing) {
+              obj.hiddenTextarea.focus();
+            }
+          });
+        }
+      },
 
-    /**
-     * @private
-     * @param {Event} [e] Event object fired on Event.js orientation change
-     * @param {Event} [self] Inner Event object
-     */
-    _onOrientationChange: function(e, self) {
-      this.__onOrientationChange && this.__onOrientationChange(e, self);
-    },
+      /**
+       * @private
+       * @param {Event} e Event object fired on mouseenter
+       */
+      _onMouseEnter: function(e) {
+        if (!this.findTarget(e)) {
+          this.fire("mouse:over", { target: null, e: e });
+          this._hoveredTarget = null;
+        }
+      },
 
-    /**
-     * @private
-     * @param {Event} [e] Event object fired on Event.js shake
-     * @param {Event} [self] Inner Event object
-     */
-    _onShake: function(e, self) {
-      this.__onShake && this.__onShake(e, self);
-    },
+      /**
+       * @private
+       * @param {Event} [e] Event object fired on Event.js orientation change
+       * @param {Event} [self] Inner Event object
+       */
+      _onOrientationChange: function(e, self) {
+        this.__onOrientationChange && this.__onOrientationChange(e, self);
+      },
 
-    /**
-     * @private
-     * @param {Event} [e] Event object fired on Event.js shake
-     * @param {Event} [self] Inner Event object
-     */
-    _onLongPress: function(e, self) {
-      this.__onLongPress && this.__onLongPress(e, self);
-    },
+      /**
+       * @private
+       * @param {Event} [e] Event object fired on Event.js shake
+       * @param {Event} [self] Inner Event object
+       */
+      _onShake: function(e, self) {
+        this.__onShake && this.__onShake(e, self);
+      },
 
-    /**
-     * prevent default to allow drop event to be fired
-     * @private
-     * @param {Event} [e] Event object fired on Event.js shake
-     */
-    _onDragOver: function(e) {
-      e.preventDefault();
-      var target = this._simpleEventHandler('dragover', e);
-      this._fireEnterLeaveEvents(target, e);
-    },
+      /**
+       * @private
+       * @param {Event} [e] Event object fired on Event.js shake
+       * @param {Event} [self] Inner Event object
+       */
+      _onLongPress: function(e, self) {
+        this.__onLongPress && this.__onLongPress(e, self);
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousedown
-     */
-    _onContextMenu: function (e) {
-      if (this.stopContextMenu) {
-        e.stopPropagation();
+      /**
+       * prevent default to allow drop event to be fired
+       * @private
+       * @param {Event} [e] Event object fired on Event.js shake
+       */
+      _onDragOver: function(e) {
         e.preventDefault();
-      }
-      return false;
-    },
+        var target = this._simpleEventHandler("dragover", e);
+        this._fireEnterLeaveEvents(target, e);
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousedown
-     */
-    _onDoubleClick: function (e) {
-      this._cacheTransformEventData(e);
-      this._handleEvent(e, 'dblclick');
-      this._resetTransformEventData(e);
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousedown
-     */
-    _onMouseDown: function (e) {
-      this.__onMouseDown(e);
-      this._resetTransformEventData();
-      addListener(fabric.document, 'touchend', this._onMouseUp, addEventOptions);
-      addListener(fabric.document, 'touchmove', this._onMouseMove, addEventOptions);
-
-      removeListener(this.upperCanvasEl, 'mousemove', this._onMouseMove, addEventOptions);
-      removeListener(this.upperCanvasEl, 'touchmove', this._onMouseMove, addEventOptions);
-
-      if (e.type === 'touchstart') {
-        // Unbind mousedown to prevent double triggers from touch devices
-        removeListener(this.upperCanvasEl, 'mousedown', this._onMouseDown);
-      }
-      else {
-        addListener(fabric.document, 'mouseup', this._onMouseUp);
-        addListener(fabric.document, 'mousemove', this._onMouseMove, addEventOptions);
-      }
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object fired on mouseup
-     */
-    _onMouseUp: function (e) {
-      this.__onMouseUp(e);
-      this._resetTransformEventData();
-      removeListener(fabric.document, 'mouseup', this._onMouseUp);
-      removeListener(fabric.document, 'touchend', this._onMouseUp, addEventOptions);
-
-      removeListener(fabric.document, 'mousemove', this._onMouseMove, addEventOptions);
-      removeListener(fabric.document, 'touchmove', this._onMouseMove, addEventOptions);
-
-      addListener(this.upperCanvasEl, 'mousemove', this._onMouseMove, addEventOptions);
-      addListener(this.upperCanvasEl, 'touchmove', this._onMouseMove, addEventOptions);
-
-      if (e.type === 'touchend') {
-        // Wait 400ms before rebinding mousedown to prevent double triggers
-        // from touch devices
-        var _this = this;
-        setTimeout(function() {
-          addListener(_this.upperCanvasEl, 'mousedown', _this._onMouseDown);
-        }, 400);
-      }
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousemove
-     */
-    _onMouseMove: function (e) {
-      !this.allowTouchScrolling && e.preventDefault && e.preventDefault();
-      this.__onMouseMove(e);
-    },
-
-    /**
-     * @private
-     */
-    _onResize: function () {
-      this.calcOffset();
-    },
-
-    /**
-     * Decides whether the canvas should be redrawn in mouseup and mousedown events.
-     * @private
-     * @param {Object} target
-     */
-    _shouldRender: function(target) {
-      var activeObject = this._activeObject;
-
-      if (
-        !!activeObject !== !!target ||
-        (activeObject && target && (activeObject !== target))
-      ) {
-        // this covers: switch of target, from target to no target, selection of target
-        // multiSelection with key and mouse
-        return true;
-      }
-      else if (activeObject && activeObject.isEditing) {
-        // if we mouse up/down over a editing textbox a cursor change,
-        // there is no need to re render
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousedown
+       */
+      _onContextMenu: function(e) {
+        if (this.stopContextMenu) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
         return false;
-      }
-      return false;
-    },
+      },
 
-    /**
-     * Method that defines the actions when mouse is released on canvas.
-     * The method resets the currentTransform parameters, store the image corner
-     * position in the image object and render the canvas on top.
-     * @private
-     * @param {Event} e Event object fired on mouseup
-     */
-    __onMouseUp: function (e) {
-      var target, transform = this._currentTransform,
-          groupSelector = this._groupSelector, shouldRender = false,
-          isClick = (!groupSelector || (groupSelector.left === 0 && groupSelector.top === 0));
-      this._cacheTransformEventData(e);
-      target = this._target;
-      this._handleEvent(e, 'up:before');
-      // if right/middle click just fire events and return
-      // target undefined will make the _handleEvent search the target
-      if (checkClick(e, RIGHT_CLICK)) {
-        if (this.fireRightClick) {
-          this._handleEvent(e, 'up', RIGHT_CLICK, isClick);
-        }
-        return;
-      }
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousedown
+       */
+      _onDoubleClick: function(e) {
+        this._cacheTransformEventData(e);
+        this._handleEvent(e, "dblclick");
+        this._resetTransformEventData(e);
+      },
 
-      if (checkClick(e, MIDDLE_CLICK)) {
-        if (this.fireMiddleClick) {
-          this._handleEvent(e, 'up', MIDDLE_CLICK, isClick);
-        }
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousedown
+       */
+      _onMouseDown: function(e) {
+        this.__onMouseDown(e);
         this._resetTransformEventData();
-        return;
-      }
+        addListener(
+          fabric.document,
+          "touchend",
+          this._onMouseUp,
+          addEventOptions
+        );
+        addListener(
+          fabric.document,
+          "touchmove",
+          this._onMouseMove,
+          addEventOptions
+        );
 
-      if (this.isDrawingMode && this._isCurrentlyDrawing) {
-        this._onMouseUpInDrawingMode(e);
-        return;
-      }
+        removeListener(
+          this.upperCanvasEl,
+          "mousemove",
+          this._onMouseMove,
+          addEventOptions
+        );
+        removeListener(
+          this.upperCanvasEl,
+          "touchmove",
+          this._onMouseMove,
+          addEventOptions
+        );
 
-      if (transform) {
-        this._finalizeCurrentTransform(e);
-        shouldRender = transform.actionPerformed;
-      }
+        if (e.type === "touchstart") {
+          // Unbind mousedown to prevent double triggers from touch devices
+          removeListener(this.upperCanvasEl, "mousedown", this._onMouseDown);
+        } else {
+          addListener(fabric.document, "mouseup", this._onMouseUp);
+          addListener(
+            fabric.document,
+            "mousemove",
+            this._onMouseMove,
+            addEventOptions
+          );
+        }
+      },
 
-      if (!isClick) {
-        this._maybeGroupObjects(e);
-        shouldRender || (shouldRender = this._shouldRender(target));
-      }
-      if (target) {
-        target.isMoving = false;
-      }
-      this._setCursorFromEvent(e, target);
-      this._handleEvent(e, 'up', LEFT_CLICK, isClick);
-      this._groupSelector = null;
-      this._currentTransform = null;
-      // reset the target information about which corner is selected
-      target && (target.__corner = 0);
-      if (shouldRender) {
-        this.requestRenderAll();
-      }
-      else if (!isClick) {
-        this.renderTop();
-      }
-    },
+      /**
+       * @private
+       * @param {Event} e Event object fired on mouseup
+       */
+      _onMouseUp: function(e) {
+        this.__onMouseUp(e);
+        this._resetTransformEventData();
+        removeListener(fabric.document, "mouseup", this._onMouseUp);
+        removeListener(
+          fabric.document,
+          "touchend",
+          this._onMouseUp,
+          addEventOptions
+        );
 
-    /**
-     * @private
-     * Handle event firing for target and subtargets
-     * @param {Event} e event from mouse
-     * @param {String} eventType event to fire (up, down or move)
-     * @return {Fabric.Object} target return the the target found, for internal reasons.
-     */
-    _simpleEventHandler: function(eventType, e) {
-      var target = this.findTarget(e),
+        removeListener(
+          fabric.document,
+          "mousemove",
+          this._onMouseMove,
+          addEventOptions
+        );
+        removeListener(
+          fabric.document,
+          "touchmove",
+          this._onMouseMove,
+          addEventOptions
+        );
+
+        addListener(
+          this.upperCanvasEl,
+          "mousemove",
+          this._onMouseMove,
+          addEventOptions
+        );
+        addListener(
+          this.upperCanvasEl,
+          "touchmove",
+          this._onMouseMove,
+          addEventOptions
+        );
+
+        if (e.type === "touchend") {
+          // Wait 400ms before rebinding mousedown to prevent double triggers
+          // from touch devices
+          var _this = this;
+          setTimeout(function() {
+            addListener(_this.upperCanvasEl, "mousedown", _this._onMouseDown);
+          }, 400);
+        }
+      },
+
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousemove
+       */
+      _onMouseMove: function(e) {
+        !this.allowTouchScrolling && e.preventDefault && e.preventDefault();
+        this.__onMouseMove(e);
+      },
+
+      /**
+       * @private
+       */
+      _onResize: function() {
+        this.calcOffset();
+      },
+
+      /**
+       * Decides whether the canvas should be redrawn in mouseup and mousedown events.
+       * @private
+       * @param {Object} target
+       */
+      _shouldRender: function(target) {
+        var activeObject = this._activeObject;
+
+        if (
+          !!activeObject !== !!target ||
+          (activeObject && target && activeObject !== target)
+        ) {
+          // this covers: switch of target, from target to no target, selection of target
+          // multiSelection with key and mouse
+          return true;
+        } else if (activeObject && activeObject.isEditing) {
+          // if we mouse up/down over a editing textbox a cursor change,
+          // there is no need to re render
+          return false;
+        }
+        return false;
+      },
+
+      /**
+       * Method that defines the actions when mouse is released on canvas.
+       * The method resets the currentTransform parameters, store the image corner
+       * position in the image object and render the canvas on top.
+       * @private
+       * @param {Event} e Event object fired on mouseup
+       */
+      __onMouseUp: function(e) {
+        var target,
+          transform = this._currentTransform,
+          groupSelector = this._groupSelector,
+          shouldRender = false,
+          isClick =
+            !groupSelector ||
+            (groupSelector.left === 0 && groupSelector.top === 0);
+        this._cacheTransformEventData(e);
+        target = this._target;
+        this._handleEvent(e, "up:before");
+        // if right/middle click just fire events and return
+        // target undefined will make the _handleEvent search the target
+        if (checkClick(e, RIGHT_CLICK)) {
+          if (this.fireRightClick) {
+            this._handleEvent(e, "up", RIGHT_CLICK, isClick);
+          }
+          return;
+        }
+
+        if (checkClick(e, MIDDLE_CLICK)) {
+          if (this.fireMiddleClick) {
+            this._handleEvent(e, "up", MIDDLE_CLICK, isClick);
+          }
+          this._resetTransformEventData();
+          return;
+        }
+
+        if (this.isDrawingMode && this._isCurrentlyDrawing) {
+          this._onMouseUpInDrawingMode(e);
+          return;
+        }
+
+        if (transform) {
+          this._finalizeCurrentTransform(e);
+          shouldRender = transform.actionPerformed;
+        }
+
+        if (!isClick) {
+          this._maybeGroupObjects(e);
+          shouldRender || (shouldRender = this._shouldRender(target));
+        }
+        if (target) {
+          target.isMoving = false;
+        }
+        this._setCursorFromEvent(e, target);
+        this._handleEvent(e, "up", LEFT_CLICK, isClick);
+        this._groupSelector = null;
+        this._currentTransform = null;
+        // reset the target information about which corner is selected
+        target && (target.__corner = 0);
+        if (shouldRender) {
+          this.requestRenderAll();
+        } else if (!isClick) {
+          this.renderTop();
+        }
+      },
+
+      /**
+       * @private
+       * Handle event firing for target and subtargets
+       * @param {Event} e event from mouse
+       * @param {String} eventType event to fire (up, down or move)
+       * @return {Fabric.Object} target return the the target found, for internal reasons.
+       */
+      _simpleEventHandler: function(eventType, e) {
+        var target = this.findTarget(e),
           targets = this.targets,
           options = {
             e: e,
             target: target,
-            subTargets: targets,
+            subTargets: targets
           };
-      this.fire(eventType, options);
-      target && target.fire(eventType, options);
-      if (!targets) {
+        this.fire(eventType, options);
+        target && target.fire(eventType, options);
+        if (!targets) {
+          return target;
+        }
+        for (var i = 0; i < targets.length; i++) {
+          targets[i].fire(eventType, options);
+        }
         return target;
-      }
-      for (var i = 0; i < targets.length; i++) {
-        targets[i].fire(eventType, options);
-      }
-      return target;
-    },
+      },
 
-    /**
-     * @private
-     * Handle event firing for target and subtargets
-     * @param {Event} e event from mouse
-     * @param {String} eventType event to fire (up, down or move)
-     * @param {fabric.Object} targetObj receiving event
-     * @param {Number} [button] button used in the event 1 = left, 2 = middle, 3 = right
-     * @param {Boolean} isClick for left button only, indicates that the mouse up happened without move.
-     */
-    _handleEvent: function(e, eventType, button, isClick) {
-      var target = this._target,
+      /**
+       * @private
+       * Handle event firing for target and subtargets
+       * @param {Event} e event from mouse
+       * @param {String} eventType event to fire (up, down or move)
+       * @param {fabric.Object} targetObj receiving event
+       * @param {Number} [button] button used in the event 1 = left, 2 = middle, 3 = right
+       * @param {Boolean} isClick for left button only, indicates that the mouse up happened without move.
+       */
+      _handleEvent: function(e, eventType, button, isClick) {
+        var target = this._target,
           targets = this.targets || [],
           options = {
             e: e,
@@ -11357,382 +11858,397 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
             absolutePointer: this._absolutePointer,
             transform: this._currentTransform
           };
-      this.fire('mouse:' + eventType, options);
-      target && target.fire('mouse' + eventType, options);
-      for (var i = 0; i < targets.length; i++) {
-        targets[i].fire('mouse' + eventType, options);
-      }
-    },
+        this.fire("mouse:" + eventType, options);
+        target && target.fire("mouse" + eventType, options);
+        for (var i = 0; i < targets.length; i++) {
+          targets[i].fire("mouse" + eventType, options);
+        }
+      },
 
-    /**
-     * @private
-     * @param {Event} e send the mouse event that generate the finalize down, so it can be used in the event
-     */
-    _finalizeCurrentTransform: function(e) {
-
-      var transform = this._currentTransform,
+      /**
+       * @private
+       * @param {Event} e send the mouse event that generate the finalize down, so it can be used in the event
+       */
+      _finalizeCurrentTransform: function(e) {
+        var transform = this._currentTransform,
           target = transform.target,
           eventName,
           options = {
             e: e,
             target: target,
-            transform: transform,
+            transform: transform
           };
 
-      if (target._scaling) {
-        target._scaling = false;
-      }
-
-      target.setCoords();
-
-      if (transform.actionPerformed || (this.stateful && target.hasStateChanged())) {
-        if (transform.actionPerformed) {
-          eventName = this._addEventOptions(options, transform);
-          this._fire(eventName, options);
+        if (target._scaling) {
+          target._scaling = false;
         }
-        this._fire('modified', options);
-      }
-    },
 
-    /**
-     * Mutate option object in order to add by property and give back the event name.
-     * @private
-     * @param {Object} options to mutate
-     * @param {Object} transform to inspect action from
-     */
-    _addEventOptions: function(options, transform) {
-      // we can probably add more details at low cost
-      // scale change, rotation changes, translation changes
-      var eventName, by;
-      switch (transform.action) {
-        case 'scaleX':
-          eventName = 'scaled';
-          by = 'x';
-          break;
-        case 'scaleY':
-          eventName = 'scaled';
-          by = 'y';
-          break;
-        case 'skewX':
-          eventName = 'skewed';
-          by = 'x';
-          break;
-        case 'skewY':
-          eventName = 'skewed';
-          by = 'y';
-          break;
-        case 'scale':
-          eventName = 'scaled';
-          by = 'equally';
-          break;
-        case 'rotate':
-          eventName = 'rotated';
-          break;
-        case 'drag':
-          eventName = 'moved';
-          break;
-      }
-      options.by = by;
-      return eventName;
-    },
+        target.setCoords();
 
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousedown
-     */
-    _onMouseDownInDrawingMode: function(e) {
-      this._isCurrentlyDrawing = true;
-      if (this.getActiveObject()) {
-        this.discardActiveObject(e).requestRenderAll();
-      }
-      if (this.clipTo) {
-        fabric.util.clipContext(this, this.contextTop);
-      }
-      var pointer = this.getPointer(e);
-      this.freeDrawingBrush.onMouseDown(pointer);
-      this._handleEvent(e, 'down');
-    },
+        if (
+          transform.actionPerformed ||
+          (this.stateful && target.hasStateChanged())
+        ) {
+          if (transform.actionPerformed) {
+            eventName = this._addEventOptions(options, transform);
+            this._fire(eventName, options);
+          }
+          this._fire("modified", options);
+        }
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event object fired on mousemove
-     */
-    _onMouseMoveInDrawingMode: function(e) {
-      if (this._isCurrentlyDrawing) {
+      /**
+       * Mutate option object in order to add by property and give back the event name.
+       * @private
+       * @param {Object} options to mutate
+       * @param {Object} transform to inspect action from
+       */
+      _addEventOptions: function(options, transform) {
+        // we can probably add more details at low cost
+        // scale change, rotation changes, translation changes
+        var eventName, by;
+        switch (transform.action) {
+          case "scaleX":
+            eventName = "scaled";
+            by = "x";
+            break;
+          case "scaleY":
+            eventName = "scaled";
+            by = "y";
+            break;
+          case "skewX":
+            eventName = "skewed";
+            by = "x";
+            break;
+          case "skewY":
+            eventName = "skewed";
+            by = "y";
+            break;
+          case "scale":
+            eventName = "scaled";
+            by = "equally";
+            break;
+          case "rotate":
+            eventName = "rotated";
+            break;
+          case "drag":
+            eventName = "moved";
+            break;
+        }
+        options.by = by;
+        return eventName;
+      },
+
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousedown
+       */
+      _onMouseDownInDrawingMode: function(e) {
+        this._isCurrentlyDrawing = true;
+        if (this.getActiveObject()) {
+          this.discardActiveObject(e).requestRenderAll();
+        }
+        if (this.clipTo) {
+          fabric.util.clipContext(this, this.contextTop);
+        }
         var pointer = this.getPointer(e);
-        this.freeDrawingBrush.onMouseMove(pointer);
-      }
-      this.setCursor(this.freeDrawingCursor);
-      this._handleEvent(e, 'move');
-    },
+        this.freeDrawingBrush.onMouseDown(pointer);
+        this._handleEvent(e, "down");
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event object fired on mouseup
-     */
-    _onMouseUpInDrawingMode: function(e) {
-      this._isCurrentlyDrawing = false;
-      if (this.clipTo) {
-        this.contextTop.restore();
-      }
-      this.freeDrawingBrush.onMouseUp();
-      this._handleEvent(e, 'up');
-    },
-
-    /**
-     * Method that defines the actions when mouse is clicked on canvas.
-     * The method inits the currentTransform parameters and renders all the
-     * canvas so the current image can be placed on the top canvas and the rest
-     * in on the container one.
-     * @private
-     * @param {Event} e Event object fired on mousedown
-     */
-    __onMouseDown: function (e) {
-      this._cacheTransformEventData(e);
-      this._handleEvent(e, 'down:before');
-      var target = this._target;
-      // if right click just fire events
-      if (checkClick(e, RIGHT_CLICK)) {
-        if (this.fireRightClick) {
-          this._handleEvent(e, 'down', RIGHT_CLICK);
+      /**
+       * @private
+       * @param {Event} e Event object fired on mousemove
+       */
+      _onMouseMoveInDrawingMode: function(e) {
+        if (this._isCurrentlyDrawing) {
+          var pointer = this.getPointer(e);
+          this.freeDrawingBrush.onMouseMove(pointer);
         }
-        return;
-      }
+        this.setCursor(this.freeDrawingCursor);
+        this._handleEvent(e, "move");
+      },
 
-      if (checkClick(e, MIDDLE_CLICK)) {
-        if (this.fireMiddleClick) {
-          this._handleEvent(e, 'down', MIDDLE_CLICK);
+      /**
+       * @private
+       * @param {Event} e Event object fired on mouseup
+       */
+      _onMouseUpInDrawingMode: function(e) {
+        this._isCurrentlyDrawing = false;
+        if (this.clipTo) {
+          this.contextTop.restore();
         }
-        return;
-      }
+        this.freeDrawingBrush.onMouseUp();
+        this._handleEvent(e, "up");
+      },
 
-      if (this.isDrawingMode) {
-        this._onMouseDownInDrawingMode(e);
-        return;
-      }
+      /**
+       * Method that defines the actions when mouse is clicked on canvas.
+       * The method inits the currentTransform parameters and renders all the
+       * canvas so the current image can be placed on the top canvas and the rest
+       * in on the container one.
+       * @private
+       * @param {Event} e Event object fired on mousedown
+       */
+      __onMouseDown: function(e) {
+        this._cacheTransformEventData(e);
+        this._handleEvent(e, "down:before");
+        var target = this._target;
+        // if right click just fire events
+        if (checkClick(e, RIGHT_CLICK)) {
+          if (this.fireRightClick) {
+            this._handleEvent(e, "down", RIGHT_CLICK);
+          }
+          return;
+        }
 
-      // ignore if some object is being transformed at this moment
-      if (this._currentTransform) {
-        return;
-      }
+        if (checkClick(e, MIDDLE_CLICK)) {
+          if (this.fireMiddleClick) {
+            this._handleEvent(e, "down", MIDDLE_CLICK);
+          }
+          return;
+        }
 
-      var pointer = this._pointer;
-      // save pointer for check in __onMouseUp event
-      this._previousPointer = pointer;
-      var shouldRender = this._shouldRender(target),
+        if (this.isDrawingMode) {
+          this._onMouseDownInDrawingMode(e);
+          return;
+        }
+
+        // ignore if some object is being transformed at this moment
+        if (this._currentTransform) {
+          return;
+        }
+
+        var pointer = this._pointer;
+        // save pointer for check in __onMouseUp event
+        this._previousPointer = pointer;
+        var shouldRender = this._shouldRender(target),
           shouldGroup = this._shouldGroup(e, target);
-      if (this._shouldClearSelection(e, target)) {
-        this.discardActiveObject(e);
-      }
-      else if (shouldGroup) {
-        this._handleGrouping(e, target);
-        target = this._activeObject;
-      }
-
-      if (this.selection && (!target ||
-        (!target.selectable && !target.isEditing && target !== this._activeObject))) {
-        this._groupSelector = {
-          ex: pointer.x,
-          ey: pointer.y,
-          top: 0,
-          left: 0
-        };
-      }
-
-      if (target) {
-        var alreadySelected = target === this._activeObject;
-        if (target.selectable) {
-          this.setActiveObject(target, e);
+        if (this._shouldClearSelection(e, target)) {
+          this.discardActiveObject(e);
+        } else if (shouldGroup) {
+          this._handleGrouping(e, target);
+          target = this._activeObject;
         }
-        if (target === this._activeObject && (target.__corner || !shouldGroup)) {
-          this._setupCurrentTransform(e, target, alreadySelected);
+
+        if (
+          this.selection &&
+          (!target ||
+            (!target.selectable &&
+              !target.isEditing &&
+              target !== this._activeObject))
+        ) {
+          this._groupSelector = {
+            ex: pointer.x,
+            ey: pointer.y,
+            top: 0,
+            left: 0
+          };
         }
-      }
-      this._handleEvent(e, 'down');
-      // we must renderAll so that we update the visuals
-      (shouldRender || shouldGroup) && this.requestRenderAll();
-    },
 
-    /**
-     * reset cache form common information needed during event processing
-     * @private
-     */
-    _resetTransformEventData: function() {
-      this._target = null;
-      this._pointer = null;
-      this._absolutePointer = null;
-    },
+        if (target) {
+          var alreadySelected = target === this._activeObject;
+          if (target.selectable) {
+            this.setActiveObject(target, e);
+          }
+          if (
+            target === this._activeObject &&
+            (target.__corner || !shouldGroup)
+          ) {
+            this._setupCurrentTransform(e, target, alreadySelected);
+          }
+        }
+        this._handleEvent(e, "down");
+        // we must renderAll so that we update the visuals
+        (shouldRender || shouldGroup) && this.requestRenderAll();
+      },
 
-    /**
-     * Cache common information needed during event processing
-     * @private
-     * @param {Event} e Event object fired on event
-     */
-    _cacheTransformEventData: function(e) {
-      // reset in order to avoid stale caching
-      this._resetTransformEventData();
-      this._pointer = this.getPointer(e, true);
-      this._absolutePointer = this.restorePointerVpt(this._pointer);
-      this._target = this._currentTransform ? this._currentTransform.target : this.findTarget(e) || null;
-    },
+      /**
+       * reset cache form common information needed during event processing
+       * @private
+       */
+      _resetTransformEventData: function() {
+        this._target = null;
+        this._pointer = null;
+        this._absolutePointer = null;
+      },
 
-    /**
-     * @private
-     */
-    _beforeTransform: function(e) {
-      var t = this._currentTransform;
-      this.stateful && t.target.saveState();
-      this.fire('before:transform', {
-        e: e,
-        transform: t,
-      });
-      // determine if it's a drag or rotate case
-      if (t.corner) {
-        this.onBeforeScaleRotate(t.target);
-      }
-    },
+      /**
+       * Cache common information needed during event processing
+       * @private
+       * @param {Event} e Event object fired on event
+       */
+      _cacheTransformEventData: function(e) {
+        // reset in order to avoid stale caching
+        this._resetTransformEventData();
+        this._pointer = this.getPointer(e, true);
+        this._absolutePointer = this.restorePointerVpt(this._pointer);
+        this._target = this._currentTransform
+          ? this._currentTransform.target
+          : this.findTarget(e) || null;
+      },
 
-    /**
-     * Method that defines the actions when mouse is hovering the canvas.
-     * The currentTransform parameter will definde whether the user is rotating/scaling/translating
-     * an image or neither of them (only hovering). A group selection is also possible and would cancel
-     * all any other type of action.
-     * In case of an image transformation only the top canvas will be rendered.
-     * @private
-     * @param {Event} e Event object fired on mousemove
-     */
-    __onMouseMove: function (e) {
-      this._handleEvent(e, 'move:before');
-      this._cacheTransformEventData(e);
-      var target, pointer;
+      /**
+       * @private
+       */
+      _beforeTransform: function(e) {
+        var t = this._currentTransform;
+        this.stateful && t.target.saveState();
+        this.fire("before:transform", {
+          e: e,
+          transform: t
+        });
+        // determine if it's a drag or rotate case
+        if (t.corner) {
+          this.onBeforeScaleRotate(t.target);
+        }
+      },
 
-      if (this.isDrawingMode) {
-        this._onMouseMoveInDrawingMode(e);
-        return;
-      }
-      if (typeof e.touches !== 'undefined' && e.touches.length > 1) {
-        return;
-      }
+      /**
+       * Method that defines the actions when mouse is hovering the canvas.
+       * The currentTransform parameter will define whether the user is rotating/scaling/translating
+       * an image or neither of them (only hovering). A group selection is also possible and would cancel
+       * all any other type of action.
+       * In case of an image transformation only the top canvas will be rendered.
+       * @private
+       * @param {Event} e Event object fired on mousemove
+       */
+      __onMouseMove: function(e) {
+        this._handleEvent(e, "move:before");
+        this._cacheTransformEventData(e);
+        var target, pointer;
 
-      var groupSelector = this._groupSelector;
+        if (this.isDrawingMode) {
+          this._onMouseMoveInDrawingMode(e);
+          return;
+        }
+        if (typeof e.touches !== "undefined" && e.touches.length > 1) {
+          return;
+        }
 
-      // We initially clicked in an empty area, so we draw a box for multiple selection
-      if (groupSelector) {
-        pointer = this._pointer;
+        var groupSelector = this._groupSelector;
 
-        groupSelector.left = pointer.x - groupSelector.ex;
-        groupSelector.top = pointer.y - groupSelector.ey;
+        // We initially clicked in an empty area, so we draw a box for multiple selection
+        if (groupSelector) {
+          pointer = this._pointer;
 
-        this.renderTop();
-      }
-      else if (!this._currentTransform) {
-        target = this.findTarget(e) || null;
-        this._setCursorFromEvent(e, target);
-        this._fireOverOutEvents(target, e);
-      }
-      else {
-        this._transformObject(e);
-      }
-      this._handleEvent(e, 'move');
-      this._resetTransformEventData();
-    },
+          groupSelector.left = pointer.x - groupSelector.ex;
+          groupSelector.top = pointer.y - groupSelector.ey;
 
-    /**
-     * Manage the mouseout, mouseover events for the fabric object on the canvas
-     * @param {Fabric.Object} target the target where the target from the mousemove event
-     * @param {Event} e Event object fired on mousemove
-     * @private
-     */
-    _fireOverOutEvents: function(target, e) {
-      this.fireSynteticInOutEvents(target, e, {
-        targetName: '_hoveredTarget',
-        canvasEvtOut: 'mouse:out',
-        evtOut: 'mouseout',
-        canvasEvtIn: 'mouse:over',
-        evtIn: 'mouseover',
-      });
-    },
+          this.renderTop();
+        } else if (!this._currentTransform) {
+          target = this.findTarget(e) || null;
+          this._setCursorFromEvent(e, target);
+          this._fireOverOutEvents(target, e);
+        } else {
+          this._transformObject(e);
+        }
+        this._handleEvent(e, "move");
+        this._resetTransformEventData();
+      },
 
-    /**
-     * Manage the dragEnter, dragLeave events for the fabric objects on the canvas
-     * @param {Fabric.Object} target the target where the target from the onDrag event
-     * @param {Event} e Event object fired on ondrag
-     * @private
-     */
-    _fireEnterLeaveEvents: function(target, e) {
-      this.fireSynteticInOutEvents(target, e, {
-        targetName: '_draggedoverTarget',
-        evtOut: 'dragleave',
-        evtIn: 'dragenter',
-      });
-    },
+      /**
+       * Manage the mouseout, mouseover events for the fabric object on the canvas
+       * @param {Fabric.Object} target the target where the target from the mousemove event
+       * @param {Event} e Event object fired on mousemove
+       * @private
+       */
+      _fireOverOutEvents: function(target, e) {
+        this.fireSyntheticInOutEvents(target, e, {
+          targetName: "_hoveredTarget",
+          canvasEvtOut: "mouse:out",
+          evtOut: "mouseout",
+          canvasEvtIn: "mouse:over",
+          evtIn: "mouseover"
+        });
+      },
 
-    /**
-     * Manage the syntetic in/out events for the fabric objects on the canvas
-     * @param {Fabric.Object} target the target where the target from the supported events
-     * @param {Event} e Event object fired
-     * @param {Object} config configuration for the function to work
-     * @param {String} config.targetName property on the canvas where the old target is stored
-     * @param {String} [config.canvasEvtOut] name of the event to fire at canvas level for out
-     * @param {String} config.evtOut name of the event to fire for out
-     * @param {String} [config.canvasEvtIn] name of the event to fire at canvas level for in
-     * @param {String} config.evtIn name of the event to fire for in
-     * @private
-     */
-    fireSynteticInOutEvents: function(target, e, config) {
-      var inOpt, outOpt, oldTarget = this[config.targetName], outFires, inFires,
-          targetChanged = oldTarget !== target, canvasEvtIn = config.canvasEvtIn, canvasEvtOut = config.canvasEvtOut;
-      if (targetChanged) {
-        inOpt = { e: e, target: target, previousTarget: oldTarget };
-        outOpt = { e: e, target: oldTarget, nextTarget: target };
-        this[config.targetName] = target;
-      }
-      inFires = target && targetChanged;
-      outFires = oldTarget && targetChanged;
-      if (outFires) {
-        canvasEvtOut && this.fire(canvasEvtOut, outOpt);
-        oldTarget.fire(config.evtOut, outOpt);
-      }
-      if (inFires) {
-        canvasEvtIn && this.fire(canvasEvtIn, inOpt);
-        target.fire(config.evtIn, inOpt);
-      }
-    },
+      /**
+       * Manage the dragEnter, dragLeave events for the fabric objects on the canvas
+       * @param {Fabric.Object} target the target where the target from the onDrag event
+       * @param {Event} e Event object fired on ondrag
+       * @private
+       */
+      _fireEnterLeaveEvents: function(target, e) {
+        this.fireSyntheticInOutEvents(target, e, {
+          targetName: "_draggedoverTarget",
+          evtOut: "dragleave",
+          evtIn: "dragenter"
+        });
+      },
 
-    /**
-     * Method that defines actions when an Event Mouse Wheel
-     * @param {Event} e Event object fired on mouseup
-     */
-    __onMouseWheel: function(e) {
-      this._cacheTransformEventData(e);
-      this._handleEvent(e, 'wheel');
-      this._resetTransformEventData();
-    },
+      /**
+       * Manage the synthetic in/out events for the fabric objects on the canvas
+       * @param {Fabric.Object} target the target where the target from the supported events
+       * @param {Event} e Event object fired
+       * @param {Object} config configuration for the function to work
+       * @param {String} config.targetName property on the canvas where the old target is stored
+       * @param {String} [config.canvasEvtOut] name of the event to fire at canvas level for out
+       * @param {String} config.evtOut name of the event to fire for out
+       * @param {String} [config.canvasEvtIn] name of the event to fire at canvas level for in
+       * @param {String} config.evtIn name of the event to fire for in
+       * @private
+       */
+      fireSyntheticInOutEvents: function(target, e, config) {
+        var inOpt,
+          outOpt,
+          oldTarget = this[config.targetName],
+          outFires,
+          inFires,
+          targetChanged = oldTarget !== target,
+          canvasEvtIn = config.canvasEvtIn,
+          canvasEvtOut = config.canvasEvtOut;
+        if (targetChanged) {
+          inOpt = { e: e, target: target, previousTarget: oldTarget };
+          outOpt = { e: e, target: oldTarget, nextTarget: target };
+          this[config.targetName] = target;
+        }
+        inFires = target && targetChanged;
+        outFires = oldTarget && targetChanged;
+        if (outFires) {
+          canvasEvtOut && this.fire(canvasEvtOut, outOpt);
+          oldTarget.fire(config.evtOut, outOpt);
+        }
+        if (inFires) {
+          canvasEvtIn && this.fire(canvasEvtIn, inOpt);
+          target.fire(config.evtIn, inOpt);
+        }
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event fired on mousemove
-     */
-    _transformObject: function(e) {
-      var pointer = this.getPointer(e),
+      /**
+       * Method that defines actions when an Event Mouse Wheel
+       * @param {Event} e Event object fired on mouseup
+       */
+      __onMouseWheel: function(e) {
+        this._cacheTransformEventData(e);
+        this._handleEvent(e, "wheel");
+        this._resetTransformEventData();
+      },
+
+      /**
+       * @private
+       * @param {Event} e Event fired on mousemove
+       */
+      _transformObject: function(e) {
+        var pointer = this.getPointer(e),
           transform = this._currentTransform;
 
-      transform.reset = false;
-      transform.target.isMoving = true;
-      transform.shiftKey = e.shiftKey;
-      transform.altKey = e[this.centeredKey];
+        transform.reset = false;
+        transform.target.isMoving = true;
+        transform.shiftKey = e.shiftKey;
+        transform.altKey = e[this.centeredKey];
 
-      this._beforeScaleTransform(e, transform);
-      this._performTransformAction(e, transform, pointer);
+        this._beforeScaleTransform(e, transform);
+        this._performTransformAction(e, transform, pointer);
 
-      transform.actionPerformed && this.requestRenderAll();
-    },
+        transform.actionPerformed && this.requestRenderAll();
+      },
 
-    /**
-     * @private
-     */
-    _performTransformAction: function(e, transform, pointer) {
-      var x = pointer.x,
+      /**
+       * @private
+       */
+      _performTransformAction: function(e, transform, pointer) {
+        var x = pointer.x,
           y = pointer.y,
           action = transform.action,
           actionPerformed = false,
@@ -11743,175 +12259,189 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
             pointer: pointer
           };
 
-      if (action === 'rotate') {
-        (actionPerformed = this._rotateObject(x, y)) && this._fire('rotating', options);
-      }
-      else if (action === 'scale') {
-        (actionPerformed = this._onScale(e, transform, x, y)) && this._fire('scaling', options);
-      }
-      else if (action === 'scaleX') {
-        (actionPerformed = this._scaleObject(x, y, 'x')) && this._fire('scaling', options);
-      }
-      else if (action === 'scaleY') {
-        (actionPerformed = this._scaleObject(x, y, 'y')) && this._fire('scaling', options);
-      }
-      else if (action === 'skewX') {
-        (actionPerformed = this._skewObject(x, y, 'x')) && this._fire('skewing', options);
-      }
-      else if (action === 'skewY') {
-        (actionPerformed = this._skewObject(x, y, 'y')) && this._fire('skewing', options);
-      }
-      else {
-        actionPerformed = this._translateObject(x, y);
-        if (actionPerformed) {
-          this._fire('moving', options);
-          this.setCursor(options.target.moveCursor || this.moveCursor);
+        if (action === "rotate") {
+          (actionPerformed = this._rotateObject(x, y)) &&
+            this._fire("rotating", options);
+        } else if (action === "scale") {
+          (actionPerformed = this._onScale(e, transform, x, y)) &&
+            this._fire("scaling", options);
+        } else if (action === "scaleX") {
+          (actionPerformed = this._scaleObject(x, y, "x")) &&
+            this._fire("scaling", options);
+        } else if (action === "scaleY") {
+          (actionPerformed = this._scaleObject(x, y, "y")) &&
+            this._fire("scaling", options);
+        } else if (action === "skewX") {
+          (actionPerformed = this._skewObject(x, y, "x")) &&
+            this._fire("skewing", options);
+        } else if (action === "skewY") {
+          (actionPerformed = this._skewObject(x, y, "y")) &&
+            this._fire("skewing", options);
+        } else {
+          actionPerformed = this._translateObject(x, y);
+          if (actionPerformed) {
+            this._fire("moving", options);
+            this.setCursor(options.target.moveCursor || this.moveCursor);
+          }
         }
-      }
-      transform.actionPerformed = transform.actionPerformed || actionPerformed;
-    },
+        transform.actionPerformed =
+          transform.actionPerformed || actionPerformed;
+      },
 
-    /**
-     * @private
-     */
-    _fire: function(eventName, options) {
-      this.fire('object:' + eventName, options);
-      options.target.fire(eventName, options);
-    },
+      /**
+       * @private
+       */
+      _fire: function(eventName, options) {
+        this.fire("object:" + eventName, options);
+        options.target.fire(eventName, options);
+      },
 
-    /**
-     * @private
-     */
-    _beforeScaleTransform: function(e, transform) {
-      if (transform.action === 'scale' || transform.action === 'scaleX' || transform.action === 'scaleY') {
-        var centerTransform = this._shouldCenterTransform(transform.target);
-
-        // Switch from a normal resize to center-based
-        if ((centerTransform && (transform.originX !== 'center' || transform.originY !== 'center')) ||
-           // Switch from center-based resize to normal one
-           (!centerTransform && transform.originX === 'center' && transform.originY === 'center')
+      /**
+       * @private
+       */
+      _beforeScaleTransform: function(e, transform) {
+        if (
+          transform.action === "scale" ||
+          transform.action === "scaleX" ||
+          transform.action === "scaleY"
         ) {
-          this._resetCurrentTransform();
-          transform.reset = true;
+          var centerTransform = this._shouldCenterTransform(transform.target);
+
+          // Switch from a normal resize to center-based
+          if (
+            (centerTransform &&
+              (transform.originX !== "center" ||
+                transform.originY !== "center")) ||
+            // Switch from center-based resize to normal one
+            (!centerTransform &&
+              transform.originX === "center" &&
+              transform.originY === "center")
+          ) {
+            this._resetCurrentTransform();
+            transform.reset = true;
+          }
         }
-      }
-    },
+      },
 
-    /**
-     * @private
-     * @param {Event} e Event object
-     * @param {Object} transform current tranform
-     * @param {Number} x mouse position x from origin
-     * @param {Number} y mouse poistion y from origin
-     * @return {Boolean} true if the scaling occurred
-     */
-    _onScale: function(e, transform, x, y) {
-      if (this._isUniscalePossible(e, transform.target)) {
-        transform.currentAction = 'scale';
-        return this._scaleObject(x, y);
-      }
-      else {
-        // Switch from a normal resize to proportional
-        if (!transform.reset && transform.currentAction === 'scale') {
-          this._resetCurrentTransform();
+      /**
+       * @private
+       * @param {Event} e Event object
+       * @param {Object} transform current transform
+       * @param {Number} x mouse position x from origin
+       * @param {Number} y mouse position y from origin
+       * @return {Boolean} true if the scaling occurred
+       */
+      _onScale: function(e, transform, x, y) {
+        if (this._isUniscalePossible(e, transform.target)) {
+          transform.currentAction = "scale";
+          return this._scaleObject(x, y);
+        } else {
+          // Switch from a normal resize to proportional
+          if (!transform.reset && transform.currentAction === "scale") {
+            this._resetCurrentTransform();
+          }
+
+          transform.currentAction = "scaleEqually";
+          return this._scaleObject(x, y, "equally");
+        }
+      },
+
+      /**
+       * @private
+       * @param {Event} e Event object
+       * @param {fabric.Object} target current target
+       * @return {Boolean} true if unproportional scaling is possible
+       */
+      _isUniscalePossible: function(e, target) {
+        return (
+          (e[this.uniScaleKey] || this.uniScaleTransform) &&
+          !target.get("lockUniScaling")
+        );
+      },
+
+      /**
+       * Sets the cursor depending on where the canvas is being hovered.
+       * Note: very buggy in Opera
+       * @param {Event} e Event object
+       * @param {Object} target Object that the mouse is hovering, if so.
+       */
+      _setCursorFromEvent: function(e, target) {
+        if (!target) {
+          this.setCursor(this.defaultCursor);
+          return false;
         }
 
-        transform.currentAction = 'scaleEqually';
-        return this._scaleObject(x, y, 'equally');
-      }
-    },
-
-    /**
-     * @private
-     * @param {Event} e Event object
-     * @param {fabric.Object} target current target
-     * @return {Boolean} true if unproportional scaling is possible
-     */
-    _isUniscalePossible: function(e, target) {
-      return (e[this.uniScaleKey] || this.uniScaleTransform) && !target.get('lockUniScaling');
-    },
-
-    /**
-     * Sets the cursor depending on where the canvas is being hovered.
-     * Note: very buggy in Opera
-     * @param {Event} e Event object
-     * @param {Object} target Object that the mouse is hovering, if so.
-     */
-    _setCursorFromEvent: function (e, target) {
-      if (!target) {
-        this.setCursor(this.defaultCursor);
-        return false;
-      }
-
-      var hoverCursor = target.hoverCursor || this.hoverCursor,
-          activeSelection = this._activeObject && this._activeObject.type === 'activeSelection' ?
-            this._activeObject : null,
+        var hoverCursor = target.hoverCursor || this.hoverCursor,
+          activeSelection =
+            this._activeObject && this._activeObject.type === "activeSelection"
+              ? this._activeObject
+              : null,
           // only show proper corner when group selection is not active
-          corner = (!activeSelection || !activeSelection.contains(target))
-                    && target._findTargetCorner(this.getPointer(e, true));
+          corner =
+            (!activeSelection || !activeSelection.contains(target)) &&
+            target._findTargetCorner(this.getPointer(e, true));
 
-      if (!corner) {
-        this.setCursor(hoverCursor);
-      }
-      else {
-        this.setCursor(this.getCornerCursor(corner, target, e));
-      }
-    },
+        if (!corner) {
+          this.setCursor(hoverCursor);
+        } else {
+          this.setCursor(this.getCornerCursor(corner, target, e));
+        }
+      },
 
-    /**
-     * @private
-     */
-    getCornerCursor: function(corner, target, e) {
-      if (this.actionIsDisabled(corner, target, e)) {
-        return this.notAllowedCursor;
-      }
-      else if (corner in cursorOffset) {
-        return this._getRotatedCornerCursor(corner, target, e);
-      }
-      else if (corner === 'mtr' && target.hasRotatingPoint) {
-        return this.rotationCursor;
-      }
-      else {
-        return this.defaultCursor;
-      }
-    },
+      /**
+       * @private
+       */
+      getCornerCursor: function(corner, target, e) {
+        if (this.actionIsDisabled(corner, target, e)) {
+          return this.notAllowedCursor;
+        } else if (corner in cursorOffset) {
+          return this._getRotatedCornerCursor(corner, target, e);
+        } else if (corner === "mtr" && target.hasRotatingPoint) {
+          return this.rotationCursor;
+        } else {
+          return this.defaultCursor;
+        }
+      },
 
-    actionIsDisabled: function(corner, target, e) {
-      if (corner === 'mt' || corner === 'mb') {
-        return e[this.altActionKey] ? target.lockSkewingX : target.lockScalingY;
-      }
-      else if (corner === 'ml' || corner === 'mr') {
-        return e[this.altActionKey] ? target.lockSkewingY : target.lockScalingX;
-      }
-      else if (corner === 'mtr') {
-        return target.lockRotation;
-      }
-      else {
-        return this._isUniscalePossible(e, target) ?
-          target.lockScalingX && target.lockScalingY : target.lockScalingX || target.lockScalingY;
-      }
-    },
+      actionIsDisabled: function(corner, target, e) {
+        if (corner === "mt" || corner === "mb") {
+          return e[this.altActionKey]
+            ? target.lockSkewingX
+            : target.lockScalingY;
+        } else if (corner === "ml" || corner === "mr") {
+          return e[this.altActionKey]
+            ? target.lockSkewingY
+            : target.lockScalingX;
+        } else if (corner === "mtr") {
+          return target.lockRotation;
+        } else {
+          return this._isUniscalePossible(e, target)
+            ? target.lockScalingX && target.lockScalingY
+            : target.lockScalingX || target.lockScalingY;
+        }
+      },
 
-    /**
-     * @private
-     */
-    _getRotatedCornerCursor: function(corner, target, e) {
-      var n = Math.round((target.angle % 360) / 45);
+      /**
+       * @private
+       */
+      _getRotatedCornerCursor: function(corner, target, e) {
+        var n = Math.round((target.angle % 360) / 45);
 
-      if (n < 0) {
-        n += 8; // full circle ahead
-      }
-      n += cursorOffset[corner];
-      if (e[this.altActionKey] && cursorOffset[corner] % 2 === 0) {
-        //if we are holding shift and we are on a mx corner...
-        n += 2;
-      }
-      // normalize n to be from 0 to 7
-      n %= 8;
+        if (n < 0) {
+          n += 8; // full circle ahead
+        }
+        n += cursorOffset[corner];
+        if (e[this.altActionKey] && cursorOffset[corner] % 2 === 0) {
+          //if we are holding shift and we are on a mx corner...
+          n += 2;
+        }
+        // normalize n to be from 0 to 7
+        n %= 8;
 
-      return this.cursorMap[n];
+        return this.cursorMap[n];
+      }
     }
-  });
+  );
 })();
 
 
@@ -12133,7 +12663,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
      * Create a new HTMLCanvas element painted with the current canvas content.
      * No need to resize the actual one or repaint it.
      * Will transfer object ownership to a new canvas, paint it, and set everything back.
-     * This is an intermediary step used to get to a dataUrl but also it is usefull to
+     * This is an intermediary step used to get to a dataUrl but also it is useful to
      * create quick image copies of a canvas without passing for the dataUrl string
      * @param {Number} [multiplier] a zoom factor.
      * @param {Object} [cropping] Cropping informations
@@ -12157,9 +12687,11 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
           originalInteractive = this.interactive,
           originalContext = this.contextContainer,
           newVp = [newZoom, 0, 0, newZoom, translateX, translateY],
+          originalRetina = this.enableRetinaScaling,
           canvasEl = fabric.util.createCanvasElement();
       canvasEl.width = scaledWidth;
       canvasEl.height = scaledHeight;
+      this.enableRetinaScaling = false;
       this.interactive = false;
       this.viewportTransform = newVp;
       this.width = scaledWidth;
@@ -12174,6 +12706,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       this.calcViewportBoundaries();
       this.contextContainer = originalContext;
       this.interactive = originalInteractive;
+      this.enableRetinaScaling = originalRetina;
       return canvasEl;
     },
   });
@@ -12930,7 +13463,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
 
     /**
      * When `true`, object is not exported in OBJECT/JSON
-     * since 1.6.3
+     * @since 1.6.3
      * @type Boolean
      * @default
      */
@@ -12938,8 +13471,9 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
 
     /**
      * When `true`, object is cached on an additional canvas.
+     * When `false`, object is not cached unless necessary ( clipPath )
      * default to true
-     * since 1.7.0
+     * @since 1.7.0
      * @type Boolean
      * @default true
      */
@@ -13141,20 +13675,20 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      */
     _getCacheCanvasDimensions: function() {
       var objectScale = this.getTotalObjectScaling(),
-          dim = this._getNonTransformedDimensions(),
-          zoomX = objectScale.scaleX,
-          zoomY = objectScale.scaleY,
-          width = dim.x * zoomX,
-          height = dim.y * zoomY;
+          // caculate dimensions without skewing
+          dim = this._getTransformedDimensions(0, 0),
+          neededX = dim.x * objectScale.scaleX / this.scaleX,
+          neededY = dim.y * objectScale.scaleY / this.scaleY;
       return {
-        // for sure this ALIASING_LIMIT is slightly crating problem
-        // in situation in wich the cache canvas gets an upper limit
-        width: width + ALIASING_LIMIT,
-        height: height + ALIASING_LIMIT,
-        zoomX: zoomX,
-        zoomY: zoomY,
-        x: dim.x,
-        y: dim.y
+        // for sure this ALIASING_LIMIT is slightly creating problem
+        // in situation in which the cache canvas gets an upper limit
+        // also objectScale contains already scaleX and scaleY
+        width: neededX + ALIASING_LIMIT,
+        height: neededY + ALIASING_LIMIT,
+        zoomX: objectScale.scaleX,
+        zoomY: objectScale.scaleY,
+        x: neededX,
+        y: neededY
       };
     },
 
@@ -13203,8 +13737,8 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
           this._cacheContext.setTransform(1, 0, 0, 1, 0, 0);
           this._cacheContext.clearRect(0, 0, canvas.width, canvas.height);
         }
-        drawingWidth = dims.x * zoomX / 2;
-        drawingHeight = dims.y * zoomY / 2;
+        drawingWidth = dims.x / 2;
+        drawingHeight = dims.y / 2;
         this.cacheTranslationX = Math.round(canvas.width / 2 - drawingWidth) + drawingWidth;
         this.cacheTranslationY = Math.round(canvas.height / 2 - drawingHeight) + drawingHeight;
         this.cacheWidth = width;
@@ -13524,15 +14058,44 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
     },
 
     /**
+     * return true if the object will draw a stroke
+     * Does not consider text styles. This is just a shortcut used at rendering time
+     * We want it to be an aproximation and be fast.
+     * wrote to avoid extra caching, it has to return true when stroke happens,
+     * can guess when it will not happen at 100% chance, does not matter if it misses
+     * some use case where the stroke is invisible.
+     * @since 3.0.0
+     * @returns Boolean
+     */
+    hasStroke: function() {
+      return this.stroke && this.stroke !== 'transparent' && this.strokeWidth !== 0;
+    },
+
+    /**
+     * return true if the object will draw a fill
+     * Does not consider text styles. This is just a shortcut used at rendering time
+     * We want it to be an aproximation and be fast.
+     * wrote to avoid extra caching, it has to return true when fill happens,
+     * can guess when it will not happen at 100% chance, does not matter if it misses
+     * some use case where the fill is invisible.
+     * @since 3.0.0
+     * @returns Boolean
+     */
+    hasFill: function() {
+      return this.fill && this.fill !== 'transparent';
+    },
+
+    /**
      * When set to `true`, force the object to have its own cache, even if it is inside a group
      * it may be needed when your object behave in a particular way on the cache and always needs
      * its own isolated canvas to render correctly.
      * Created to be overridden
      * since 1.7.12
-     * @returns false
+     * @returns Boolean
      */
     needsItsOwnCache: function() {
-      if (this.paintFirst === 'stroke' && typeof this.shadow === 'object') {
+      if (this.paintFirst === 'stroke' &&
+        this.hasFill() && this.hasStroke() && typeof this.shadow === 'object') {
         return true;
       }
       if (this.clipPath) {
@@ -13547,11 +14110,14 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * needsItsOwnCache should be used when the object drawing method requires
      * a cache step. None of the fabric classes requires it.
      * Generally you do not cache objects in groups because the group outside is cached.
+     * Read as: cache if is needed, or if the feature is enabled but we are not already caching.
      * @return {Boolean}
      */
     shouldCache: function() {
-      this.ownCaching = this.objectCaching &&
-      (!this.group || this.needsItsOwnCache() || !this.group.isOnACache());
+      this.ownCaching = this.needsItsOwnCache() || (
+        this.objectCaching &&
+        (!this.group || !this.group.isOnACache())
+      );
       return this.ownCaching;
     },
 
@@ -13793,10 +14359,15 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
         return;
       }
 
-      var shadow = this.shadow, canvas = this.canvas,
+      var shadow = this.shadow, canvas = this.canvas, scaling,
           multX = (canvas && canvas.viewportTransform[0]) || 1,
-          multY = (canvas && canvas.viewportTransform[3]) || 1,
-          scaling = this.getObjectScaling();
+          multY = (canvas && canvas.viewportTransform[3]) || 1;
+      if (shadow.nonScaling) {
+        scaling = { scaleX: 1, scaleY: 1 };
+      }
+      else {
+        scaling = this.getObjectScaling();
+      }
       if (canvas && canvas._isRetinaScaling()) {
         multX *= fabric.devicePixelRatio;
         multY *= fabric.devicePixelRatio;
@@ -14028,9 +14599,14 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
 
       if (shadow) {
         shadowBlur = shadow.blur;
-        scaling = this.getObjectScaling();
-        shadowOffset.x = 2 * Math.round((abs(shadow.offsetX) + shadowBlur) * abs(scaling.scaleX));
-        shadowOffset.y = 2 * Math.round((abs(shadow.offsetY) + shadowBlur) * abs(scaling.scaleY));
+        if (shadow.nonScaling) {
+          scaling = { scaleX: 1, scaleY: 1 };
+        }
+        else {
+          scaling = this.getObjectScaling();
+        }
+        shadowOffset.x = 2 * Math.round(abs(shadow.offsetX) + shadowBlur) * (abs(scaling.scaleX));
+        shadowOffset.y = 2 * Math.round(abs(shadow.offsetY) + shadowBlur) * (abs(scaling.scaleY));
       }
       el.width = boundingRect.width + shadowOffset.x;
       el.height = boundingRect.height + shadowOffset.y;
@@ -14696,7 +15272,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * each property is an object with x, y, instance of Fabric.Point.
      * The coordinates depends from this properties: width, height, scaleX, scaleY
      * skewX, skewY, angle, strokeWidth, top, left.
-     * Those coordinates are usefull to understand where an object is. They get updated
+     * Those coordinates are useful to understand where an object is. They get updated
      * with oCoords but they do not need to be updated when zoom or panning change.
      * The coordinates get updated with @method setCoords.
      * You can calculate them without updating with @method calcCoords(true);
@@ -14850,7 +15426,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * @param {Fabric.Point} pointTL Top Left point
      * @param {Fabric.Point} pointBR Top Right point
      * @param {Boolean} calculate use coordinates of current position instead of .oCoords
-     * @return {Boolean} true if the objects containe the point
+     * @return {Boolean} true if the object contains the point
      */
     _containsCenterOfCanvas: function(pointTL, pointBR, calculate) {
       // worst case scenario the object is so big that contains the screen
@@ -14955,7 +15531,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
 
     /**
      * Returns coordinates of object's bounding rectangle (left, top, width, height)
-     * the box is intented as aligned to axis of canvas.
+     * the box is intended as aligned to axis of canvas.
      * @param {Boolean} [absolute] use coordinates without viewportTransform
      * @param {Boolean} [calculate] use coordinates of current position instead of .oCoords / .aCoords
      * @return {Object} Object with left, top, width, height properties
@@ -14966,7 +15542,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
     },
 
     /**
-     * Returns width of an object bounding box counting transformations
+     * Returns width of an object's bounding box counting transformations
      * before 2.0 it was named getWidth();
      * @return {Number} width value
      */
@@ -15043,7 +15619,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
     },
 
     /**
-     * Calculate and returns the .coords of an object.
+     * Calculates and returns the .coords of an object.
      * @return {Object} Object with tl, tr, br, bl ....
      * @chainable
      */
@@ -15118,7 +15694,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * Sets corner position coordinates based on current angle, width and height.
      * See {@link https://github.com/kangax/fabric.js/wiki/When-to-call-setCoords|When-to-call-setCoords}
      * @param {Boolean} [ignoreZoom] set oCoords with or without the viewport transform.
-     * @param {Boolean} [skipAbsolute] skip calculation of aCoords, usefull in setViewportTransform
+     * @param {Boolean} [skipAbsolute] skip calculation of aCoords, useful in setViewportTransform
      * @return {fabric.Object} thisArg
      * @chainable
      */
@@ -15166,10 +15742,10 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
     },
 
     /**
-     * calculate trasform Matrix that represent current transformation from
-     * object properties.
-     * @param {Boolean} [skipGroup] return transformMatrix for object and not go upward with parents
-     * @return {Array} matrix Transform Matrix for the object
+     * calculate transform matrix that represents the current transformations from the
+     * object's properties.
+     * @param {Boolean} [skipGroup] return transform matrix for object not counting parent transformations
+     * @return {Array} transform matrix for the object
      */
     calcTransformMatrix: function(skipGroup) {
       if (skipGroup) {
@@ -15237,7 +15813,9 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
     },
 
     /*
-     * Calculate object bounding boxdimensions from its properties scale, skew.
+     * Calculate object bounding box dimensions from its properties scale, skew.
+     * @param {Number} skewX, a value to override current skewX
+     * @param {Number} skewY, a value to override current skewY
      * @private
      * @return {Object} .x width dimension
      * @return {Object} .y height dimension
@@ -15261,7 +15839,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
         dimY = dimensions.y;
       }
       if (noSkew) {
-        return this._finalizeDiemensions(dimX * this.scaleX, dimY * this.scaleY);
+        return this._finalizeDimensions(dimX * this.scaleX, dimY * this.scaleY);
       }
       else {
         dimX /= 2;
@@ -15290,25 +15868,25 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
         points[i] = fabric.util.transformPoint(points[i], transformMatrix);
       }
       bbox = fabric.util.makeBoundingBoxFromPoints(points);
-      return this._finalizeDiemensions(bbox.width, bbox.height);
+      return this._finalizeDimensions(bbox.width, bbox.height);
     },
 
     /*
-     * Calculate object bounding boxdimensions from its properties scale, skew.
+     * Calculate object bounding box dimensions from its properties scale, skew.
      * @param Number width width of the bbox
      * @param Number height height of the bbox
      * @private
      * @return {Object} .x finalized width dimension
      * @return {Object} .y finalized height dimension
      */
-    _finalizeDiemensions: function(width, height) {
+    _finalizeDimensions: function(width, height) {
       return this.strokeUniform ?
         { x: width + this.strokeWidth, y: height + this.strokeWidth }
         :
         { x: width, y: height };
     },
     /*
-     * Calculate object dimensions for controls. include padding and canvas zoom
+     * Calculate object dimensions for controls, including padding and canvas zoom.
      * private
      */
     _calculateCurrentDimensions: function()  {
@@ -17458,6 +18036,8 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
 
     parsedAttributes.left = parsedAttributes.left || 0;
     parsedAttributes.top  = parsedAttributes.top  || 0;
+    parsedAttributes.height  = parsedAttributes.height || 0;
+    parsedAttributes.width  = parsedAttributes.width || 0;
     var rect = new fabric.Rect(extend((options ? fabric.util.object.clone(options) : { }), parsedAttributes));
     rect.visible = rect.visible && rect.width > 0 && rect.height > 0;
     callback(rect);
@@ -19040,15 +19620,13 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
 
     /**
      * Decide if the object should cache or not. Create its own cache level
-     * objectCaching is a global flag, wins over everything
      * needsItsOwnCache should be used when the object drawing method requires
      * a cache step. None of the fabric classes requires it.
-     * Generally you do not cache objects in groups because the group outside is cached.
+     * Generally you do not cache objects in groups because the group is already cached.
      * @return {Boolean}
      */
     shouldCache: function() {
-      var ownCache = this.objectCaching && (!this.group || this.needsItsOwnCache() || !this.group.isOnACache());
-      this.ownCaching = ownCache;
+      var ownCache = fabric.Object.prototype.shouldCache.call(this);
       if (ownCache) {
         for (var i = 0, len = this._objects.length; i < len; i++) {
           if (this._objects[i].willDrawShadow()) {
@@ -19288,8 +19866,23 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
       }
 
       return this._createBaseSVGMarkup(
-        svgString,
+        this._toSVG(),
         { reviver: reviver, noStyle: true, withShadow: true });
+    },
+
+    /**
+     * Returns svg representation of an instance
+     * @param {Function} [reviver] Method for further parsing of svg representation.
+     * @return {String} svg representation of an instance
+     */
+    _toSVG: function(reviver) {
+      var svgString = [];
+
+      for (var i = 0, len = this._objects.length; i < len; i++) {
+        svgString.push('\t', this._objects[i].toSVG(reviver));
+      }
+
+      return svgString;
     },
 
     /**
@@ -19996,7 +20589,6 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
 
     /**
      * Decide if the object should cache or not. Create its own cache level
-     * objectCaching is a global flag, wins over everything
      * needsItsOwnCache should be used when the object drawing method requires
      * a cache step. None of the fabric classes requires it.
      * Generally you do not cache objects in groups because the group outside is cached.
@@ -20007,8 +20599,7 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      * @return {Boolean}
      */
     shouldCache: function() {
-      this.ownCaching = this.objectCaching && this.needsItsOwnCache();
-      return this.ownCaching;
+      return this.needsItsOwnCache();
     },
 
     _renderFill: function(ctx) {
@@ -20420,8 +21011,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * putImageData is faster than drawImage for that specific operation.
      */
     chooseFastestCopyGLTo2DMethod: function(width, height) {
-      var canMeasurePerf = typeof window.performance !== 'undefined';
-      var canUseImageData;
+      var canMeasurePerf = typeof window.performance !== 'undefined', canUseImageData;
       try {
         new ImageData(1, 1);
         canUseImageData = true;
@@ -20441,6 +21031,11 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
       var targetCanvas = fabric.util.createCanvasElement();
       // eslint-disable-next-line no-undef
       var imageBuffer = new ArrayBuffer(width * height * 4);
+      if (fabric.forceGLPutImageData) {
+        this.imageBuffer = imageBuffer;
+        this.copyGLTo2D = copyGLTo2DPutImageData;
+        return;
+      }
       var testContext = {
         imageBuffer: imageBuffer,
         destinationWidth: width,
@@ -24751,6 +25346,16 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
     },
 
     /**
+     * Detect if a line has a linebreak and so we need to account for it when moving
+     * and counting style.
+     * It return always for text and Itext.
+     * @return Number
+     */
+    missingNewlineOffset: function() {
+      return 1;
+    },
+
+    /**
      * Returns string representation of an instance
      * @return {String} String representation of text object
      */
@@ -25540,11 +26145,12 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
       var style = styleObject || this, family = this.fontFamily,
           fontIsGeneric = fabric.Text.genericFonts.indexOf(family.toLowerCase()) > -1;
       var fontFamily = family === undefined ||
-      family.indexOf('\'') > -1 ||
+      family.indexOf('\'') > -1 || family.indexOf(',') > -1 ||
       family.indexOf('"') > -1 || fontIsGeneric
         ? style.fontFamily : '"' + style.fontFamily + '"';
       return [
         // node-canvas needs "weight style", while browsers need "style weight"
+        // verify if this can be fixed in JSDOM
         (fabric.isLikelyNode ? style.fontWeight : style.fontStyle),
         (fabric.isLikelyNode ? style.fontStyle : style.fontWeight),
         forMeasuring ? this.CACHE_FONT_SIZE + 'px' : style.fontSize + 'px',
@@ -25919,7 +26525,7 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
       var loc = this.get2DCursorLocation(index);
 
       if (!this._getLineStyle(loc.lineIndex)) {
-        this._setLineStyle(loc.lineIndex, {});
+        this._setLineStyle(loc.lineIndex);
       }
 
       if (!this._getStyleDeclaration(loc.lineIndex, loc.charIndex)) {
@@ -25938,8 +26544,8 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
       if (typeof selectionStart === 'undefined') {
         selectionStart = this.selectionStart;
       }
-      var lines = skipWrapping ? this._unwrappedTextLines : this._textLines;
-      var len = lines.length;
+      var lines = skipWrapping ? this._unwrappedTextLines : this._textLines,
+          len = lines.length;
       for (var i = 0; i < len; i++) {
         if (selectionStart <= lines[i].length) {
           return {
@@ -25947,7 +26553,7 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
             charIndex: selectionStart
           };
         }
-        selectionStart -= lines[i].length + 1;
+        selectionStart -= lines[i].length + this.missingNewlineOffset(i);
       }
       return {
         lineIndex: i - 1,
@@ -26067,19 +26673,20 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
 
     /**
      * @param {Number} lineIndex
+     * @return {Boolean} if the line exists or not
      * @private
      */
     _getLineStyle: function(lineIndex) {
-      return this.styles[lineIndex];
+      return !!this.styles[lineIndex];
     },
 
     /**
+     * Set the line style to an empty object so that is initialized
      * @param {Number} lineIndex
-     * @param {Object} style
      * @private
      */
-    _setLineStyle: function(lineIndex, style) {
-      this.styles[lineIndex] = style;
+    _setLineStyle: function(lineIndex) {
+      this.styles[lineIndex] = {};
     },
 
     /**
@@ -26802,7 +27409,7 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
 
     /**
      * Find new selection index representing start of current word according to current selection index
-     * @param {Number} startFrom Surrent selection index
+     * @param {Number} startFrom Current selection index
      * @return {Number} New selection index
      */
     findWordBoundaryLeft: function(startFrom) {
@@ -27123,9 +27730,9 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
       if (!this.canvas) {
         return { x: 1, y: 1 };
       }
-      var desiredPostion = this.inCompositionMode ? this.compositionStart : this.selectionStart,
-          boundaries = this._getCursorBoundaries(desiredPostion),
-          cursorLocation = this.get2DCursorLocation(desiredPostion),
+      var desiredPosition = this.inCompositionMode ? this.compositionStart : this.selectionStart,
+          boundaries = this._getCursorBoundaries(desiredPosition),
+          cursorLocation = this.get2DCursorLocation(desiredPosition),
           lineIndex = cursorLocation.lineIndex,
           charIndex = cursorLocation.charIndex,
           charHeight = this.getValueOfPropertyAt(lineIndex, charIndex, 'fontSize') * this.lineHeight,
@@ -27390,7 +27997,7 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
      * @param {Number} lineIndex Index of a line
      * @param {Number} charIndex Index of a char
      * @param {Number} quantity number Style object to insert, if given
-     * @param {Array} copiedStyle array of style objecs
+     * @param {Array} copiedStyle array of style objects
      */
     insertCharStyleObject: function(lineIndex, charIndex, quantity, copiedStyle) {
       if (!this.styles) {
@@ -27442,23 +28049,23 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
      */
     insertNewStyleBlock: function(insertedText, start, copiedStyle) {
       var cursorLoc = this.get2DCursorLocation(start, true),
-          addedLines = [0], linesLenght = 0;
+          addedLines = [0], linesLength = 0;
       for (var i = 0; i < insertedText.length; i++) {
         if (insertedText[i] === '\n') {
-          linesLenght++;
-          addedLines[linesLenght] = 0;
+          linesLength++;
+          addedLines[linesLength] = 0;
         }
         else {
-          addedLines[linesLenght]++;
+          addedLines[linesLength]++;
         }
       }
       if (addedLines[0] > 0) {
         this.insertCharStyleObject(cursorLoc.lineIndex, cursorLoc.charIndex, addedLines[0], copiedStyle);
         copiedStyle = copiedStyle && copiedStyle.slice(addedLines[0] + 1);
       }
-      linesLenght && this.insertNewlineStyleObject(
-        cursorLoc.lineIndex, cursorLoc.charIndex + addedLines[0], linesLenght);
-      for (var i = 1; i < linesLenght; i++) {
+      linesLength && this.insertNewlineStyleObject(
+        cursorLoc.lineIndex, cursorLoc.charIndex + addedLines[0], linesLength);
+      for (var i = 1; i < linesLength; i++) {
         if (addedLines[i] > 0) {
           this.insertCharStyleObject(cursorLoc.lineIndex + i, 0, addedLines[i], copiedStyle);
         }
@@ -27474,7 +28081,7 @@ fabric.Image.filters.BaseFilter.fromObject = function(object, callback) {
     },
 
     /**
-     * Set the selectionStart and selectionEnd according to the ne postion of cursor
+     * Set the selectionStart and selectionEnd according to the new position of cursor
      * mimic the key - mouse navigation when shift is pressed.
      */
     setSelectionStartEndWithShift: function(start, end, newSelection) {
@@ -27735,7 +28342,7 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
         height += this.getHeightOfLine(i) * this.scaleY;
         lineIndex = i;
         if (i > 0) {
-          charIndex += this._textLines[i - 1].length + 1;
+          charIndex += this._textLines[i - 1].length + this.missingNewlineOffset(i);
         }
       }
       else {
@@ -27976,7 +28583,7 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
       }
     }
     if (insertedText.length) {
-      if (fromPaste && insertedText.join('') === fabric.copiedText) {
+      if (fromPaste && insertedText.join('') === fabric.copiedText && !fabric.disableStyleCopyPaste) {
         this.insertNewStyleBlock(insertedText, this.selectionStart, fabric.copiedTextStyle);
       }
       else {
@@ -28024,7 +28631,12 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
     }
 
     fabric.copiedText = this.getSelectedText();
-    fabric.copiedTextStyle = this.getSelectionStyles(this.selectionStart, this.selectionEnd, true);
+    if (!fabric.disableStyleCopyPaste) {
+      fabric.copiedTextStyle = this.getSelectionStyles(this.selectionStart, this.selectionEnd, true);
+    }
+    else {
+      fabric.copiedTextStyle = null;
+    }
     this._copyDone = true;
   },
 
@@ -28081,7 +28693,7 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
         widthBeforeCursor = this._getWidthBeforeCursor(lineIndex, charIndex),
         indexOnOtherLine = this._getIndexOnLine(lineIndex + 1, widthBeforeCursor),
         textAfterCursor = this._textLines[lineIndex].slice(charIndex);
-    return textAfterCursor.length + indexOnOtherLine + 2;
+    return textAfterCursor.length + indexOnOtherLine + 1 + this.missingNewlineOffset(lineIndex);
   },
 
   /**
@@ -28116,9 +28728,11 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
     var charIndex = cursorLocation.charIndex,
         widthBeforeCursor = this._getWidthBeforeCursor(lineIndex, charIndex),
         indexOnOtherLine = this._getIndexOnLine(lineIndex - 1, widthBeforeCursor),
-        textBeforeCursor = this._textLines[lineIndex].slice(0, charIndex);
+        textBeforeCursor = this._textLines[lineIndex].slice(0, charIndex),
+        missingNewlineOffset = this.missingNewlineOffset(lineIndex - 1);
     // return a negative offset
-    return -this._textLines[lineIndex - 1].length + indexOnOtherLine - textBeforeCursor.length;
+    return -this._textLines[lineIndex - 1].length
+     + indexOnOtherLine - textBeforeCursor.length + (1 - missingNewlineOffset);
   },
 
   /**
@@ -28445,12 +29059,22 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
      * @param {Function} [reviver] Method for further parsing of svg representation.
      * @return {String} svg representation of an instance
      */
-    toSVG: function(reviver) {
+    _toSVG: function() {
       var offsets = this._getSVGLeftTopOffsets(),
-          textAndBg = this._getSVGTextAndBg(offsets.textTop, offsets.textLeft),
-          internalMarkup = this._wrapSVGTextAndBg(textAndBg);
+          textAndBg = this._getSVGTextAndBg(offsets.textTop, offsets.textLeft);
+      return this._wrapSVGTextAndBg(textAndBg);
+    },
+
+    /**
+     * Returns svg representation of an instance
+     * @param {Function} [reviver] Method for further parsing of svg representation.
+     * @return {String} svg representation of an instance
+     */
+    toSVG: function(reviver) {
       return this._createBaseSVGMarkup(
-        internalMarkup, { reviver: reviver, noStyle: true, withShadow: true });
+        this._toSVG(),
+        { reviver: reviver, noStyle: true, withShadow: true }
+      );
     },
 
     /**
@@ -28795,7 +29419,7 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
           charCount++;
           realLineCount++;
         }
-        else if (!this.graphemeSplit && this._reSpaceAndTab.test(textInfo.graphemeText[charCount]) && i > 0) {
+        else if (!this.splitByGrapheme && this._reSpaceAndTab.test(textInfo.graphemeText[charCount]) && i > 0) {
           // this case deals with space's that are removed from end of lines when wrapping
           realLineCharCount++;
           charCount++;
@@ -28902,34 +29526,27 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
     },
 
     /**
-    * probably broken need a fix
+     * probably broken need a fix
+     * Returns the real style line that correspond to the wrapped lineIndex line
+     * Used just to verify if the line does exist or not.
      * @param {Number} lineIndex
+     * @returns {Boolean} if the line exists or not
      * @private
      */
     _getLineStyle: function(lineIndex) {
       var map = this._styleMap[lineIndex];
-      return this.styles[map.line];
+      return !!this.styles[map.line];
     },
 
     /**
-     * probably broken need a fix
+     * Set the line style to an empty object so that is initialized
      * @param {Number} lineIndex
      * @param {Object} style
      * @private
      */
-    _setLineStyle: function(lineIndex, style) {
+    _setLineStyle: function(lineIndex) {
       var map = this._styleMap[lineIndex];
-      this.styles[map.line] = style;
-    },
-
-    /**
-     * probably broken need a fix
-     * @param {Number} lineIndex
-     * @private
-     */
-    _deleteLineStyle: function(lineIndex) {
-      var map = this._styleMap[lineIndex];
-      delete this.styles[map.line];
+      this.styles[map.line] = {};
     },
 
     /**
@@ -29059,6 +29676,18 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
     },
 
     /**
+     * Detect if a line has a linebreak and so we need to account for it when moving
+     * and counting style.
+     * @return Number
+     */
+    missingNewlineOffset: function(lineIndex) {
+      if (this.splitByGrapheme) {
+        return this.isEndOfWrapping(lineIndex) ? 1 : 0;
+      }
+      return 1;
+    },
+
+    /**
     * Gets lines of text to render in the Textbox. This function calculates
     * text wrapping on the fly every time it is called.
     * @param {String} text text to split
@@ -29080,6 +29709,20 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
 
     getMinWidth: function() {
       return Math.max(this.minWidth, this.dynamicMinWidth);
+    },
+
+    _removeExtraneousStyles: function() {
+      var linesToKeep = {};
+      for (var prop in this._styleMap) {
+        if (this._textLines[prop]) {
+          linesToKeep[this._styleMap[prop].line] = 1;
+        }
+      }
+      for (var prop in this.styles) {
+        if (!linesToKeep[prop]) {
+          delete this.styles[prop];
+        }
+      }
     },
 
     /**
@@ -29104,51 +29747,4 @@ fabric.util.object.extend(fabric.IText.prototype, /** @lends fabric.IText.protot
     return fabric.Object._fromObject('Textbox', object, callback, 'text');
   };
 })(typeof exports !== 'undefined' ? exports : this);
-
-
-(function() {
-
-  /**
-   * Override _setObjectScale and add Textbox specific resizing behavior. Resizing
-   * a Textbox doesn't scale text, it only changes width and makes text wrap automatically.
-   */
-  var setObjectScaleOverridden = fabric.Canvas.prototype._setObjectScale;
-
-  fabric.Canvas.prototype._setObjectScale = function(localMouse, transform,
-    lockScalingX, lockScalingY, by, lockScalingFlip, _dim) {
-
-    var t = transform.target, scaled,
-        scaleX = localMouse.x * t.scaleX / _dim.x,
-        scaleY = localMouse.y * t.scaleY / _dim.y;
-    if (by === 'x' && t instanceof fabric.Textbox) {
-      var tw = t._getTransformedDimensions().x;
-      var w = t.width * (localMouse.x / tw);
-      transform.newScaleX = scaleX;
-      transform.newScaleY = scaleY;
-      if (w >= t.getMinWidth()) {
-        scaled = w !== t.width;
-        t.set('width', w);
-        return scaled;
-      }
-    }
-    else {
-      return setObjectScaleOverridden.call(fabric.Canvas.prototype, localMouse, transform,
-        lockScalingX, lockScalingY, by, lockScalingFlip, _dim);
-    }
-  };
-
-  fabric.util.object.extend(fabric.Textbox.prototype, /** @lends fabric.IText.prototype */ {
-    /**
-     * @private
-     */
-    _removeExtraneousStyles: function() {
-      for (var prop in this._styleMap) {
-        if (!this._textLines[prop]) {
-          delete this.styles[this._styleMap[prop].line];
-        }
-      }
-    },
-
-  });
-})();
 
